@@ -11,6 +11,7 @@ Covers the API contract of §4:
 These are response-only DTOs — no god-DTO, only fields the storefront needs.
 """
 
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
@@ -142,3 +143,27 @@ class ProductDetail(BaseModel):
 
 
 CategoryNode.model_rebuild()
+
+
+# --------------------------------------------------------------------------- #
+# Sitemap (flat feed for per-locale sitemaps with hreflang alternates)
+# --------------------------------------------------------------------------- #
+class SitemapSlug(BaseModel):
+    """A ``(lang, slug)`` pair for one indexable entity."""
+
+    lang: str
+    slug: str
+
+
+class SitemapEntry(BaseModel):
+    """One published entity: its per-language slugs + last-modified time."""
+
+    slugs: list[SitemapSlug] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+
+class SitemapData(BaseModel):
+    """All published, indexable entities for building per-locale sitemaps."""
+
+    categories: list[SitemapEntry] = Field(default_factory=list)
+    products: list[SitemapEntry] = Field(default_factory=list)

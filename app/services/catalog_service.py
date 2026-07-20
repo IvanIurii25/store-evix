@@ -13,6 +13,7 @@ maps to responses.
 import base64
 import binascii
 import json
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,9 @@ from app.schemas.catalog import (
     ProductDetail,
     ProductListing,
     ProductSlug,
+    SitemapData,
+    SitemapEntry,
+    SitemapSlug,
 )
 
 # Listing page size for keyset pagination (§5.3).
@@ -343,6 +347,37 @@ class CatalogService:
             media=media,
             slugs=slugs,
         )
+
+    async def get_sitemap(self) -> SitemapData:
+        """Return every published category + product with per-language slugs.
+
+        Flat feed for building per-locale sitemaps with hreflang alternates in a
+        single request (two grouped queries, no per-entity round-trips).
+
+        Returns:
+            SitemapData: Published categories and products, each with its
+                ``(lang, slug)`` pairs and ``updated_at`` for ``lastmod``.
+        """
+        category_rows = await self.repo.get_active_category_slugs()
+        product_rows = await self.repo.get_active_product_slugs()
+        return SitemapData(
+            categories=self._group_sitemap(category_rows),
+            products=self._group_sitemap(product_rows),
+        )
+
+    @staticmethod
+    def _group_sitemap(
+        rows: list[tuple[int, datetime, str, str]],
+    ) -> list[SitemapEntry]:
+        """Group ``(id, updated_at, lang, slug)`` rows into one entry per entity."""
+        entries: dict[int, SitemapEntry] = {}
+        for entity_id, updated_at, lang, slug in rows:
+            entry = entries.get(entity_id)
+            if entry is None:
+                entry = SitemapEntry(slugs=[], updated_at=updated_at)
+                entries[entity_id] = entry
+            entry.slugs.append(SitemapSlug(lang=lang, slug=slug))
+        return list(entries.values())
 
     @staticmethod
     def _group_attributes(

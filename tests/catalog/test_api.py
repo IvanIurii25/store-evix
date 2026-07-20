@@ -83,6 +83,30 @@ async def test_api_category_detail(seed, client):
 
 
 @pytest.mark.asyncio
+async def test_api_sitemap_flat_feed(seed, client):
+    """GET /catalog/sitemap returns published categories + products with both slugs."""
+    await seed["build_tree"]()
+    await _seed_pdp(seed)
+
+    resp = await client.get("/api/v1/catalog/sitemap")
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    def _slug_sets(entries):
+        return {frozenset((s["lang"], s["slug"]) for s in e["slugs"]) for e in entries}
+
+    cat_sets = _slug_sets(body["categories"])
+    assert frozenset({("ru", "electronika"), ("ro", "electronice")}) in cat_sets
+    assert frozenset({("ru", "telefony"), ("ro", "telefoane")}) in cat_sets
+
+    prod_sets = _slug_sets(body["products"])
+    assert frozenset({("ru", "pdp-ru"), ("ro", "pdp-ro")}) in prod_sets
+    # updated_at is present for lastmod
+    assert body["categories"][0]["updated_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_api_category_detail_404(seed, client):
     """Unknown category slug returns a unified 404 envelope."""
     await seed["build_tree"]()

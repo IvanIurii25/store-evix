@@ -9,6 +9,7 @@ joins ``product ⨝ category ⨝ media``. Pagination is keyset/cursor (§5.3), n
 OFFSET. Relations that must be materialized are loaded explicitly (no N+1).
 """
 
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select
@@ -360,6 +361,44 @@ class CatalogRepository:
             CategoryTranslation.category_id == category_id
         )
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_active_category_slugs(
+        self,
+    ) -> list[tuple[int, datetime, str, str]]:
+        """Return ``(id, updated_at, lang, slug)`` for every active category.
+
+        One row per translation; the service groups by id into per-language
+        slug sets for the sitemap. Ordered by id for stable output.
+        """
+        stmt = (
+            select(
+                Category.id,
+                Category.updated_at,
+                CategoryTranslation.lang,
+                CategoryTranslation.slug,
+            )
+            .join(CategoryTranslation, CategoryTranslation.category_id == Category.id)
+            .where(Category.is_active.is_(True))
+            .order_by(Category.id)
+        )
+        return list((await self.session.execute(stmt)).all())
+
+    async def get_active_product_slugs(
+        self,
+    ) -> list[tuple[int, datetime, str, str]]:
+        """Return ``(id, updated_at, lang, slug)`` for every active product."""
+        stmt = (
+            select(
+                Product.id,
+                Product.updated_at,
+                ProductTranslation.lang,
+                ProductTranslation.slug,
+            )
+            .join(ProductTranslation, ProductTranslation.product_id == Product.id)
+            .where(Product.is_active.is_(True))
+            .order_by(Product.id)
+        )
+        return list((await self.session.execute(stmt)).all())
 
     async def get_product_media(self, product_id: int) -> list[Media]:
         """Return a product's media ordered by ``position`` (no N+1).

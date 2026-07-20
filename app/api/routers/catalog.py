@@ -22,6 +22,7 @@ from app.schemas.catalog import (
     ProductDetail,
     ProductListing,
     ProductSort,
+    SitemapData,
 )
 from app.services.catalog_service import (
     CatalogService,
@@ -30,6 +31,14 @@ from app.services.catalog_service import (
 )
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
+
+
+@router.get("/sitemap", response_model=SitemapData)
+async def get_sitemap(
+    session: AsyncSession = Depends(get_session),
+) -> SitemapData:
+    """Flat feed of all published categories + products with per-language slugs."""
+    return await CatalogService(session).get_sitemap()
 
 
 @router.get("/categories", response_model=list[CategoryNode])
