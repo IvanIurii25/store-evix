@@ -67,6 +67,30 @@ async def http_exception_handler(
     )
 
 
+def _jsonable_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make Pydantic v2 validation errors JSON-serializable.
+
+    Validators that raise ``ValueError`` (slug/lang checks) put the raw
+    exception object into ``ctx``; that object is not JSON serializable and
+    would turn the 422 into a 500. Stringify any such context value so the
+    envelope always serializes while keeping the human-readable message.
+
+    Args:
+        errors: The list returned by :meth:`RequestValidationError.errors`.
+
+    Returns:
+        list[dict[str, Any]]: The same errors with a JSON-safe ``ctx``.
+    """
+    safe: list[dict[str, Any]] = []
+    for err in errors:
+        item = dict(err)
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {key: str(value) for key, value in ctx.items()}
+        safe.append(item)
+    return safe
+
+
 async def validation_exception_handler(
     request: Request,
     exc: RequestValidationError,
@@ -76,7 +100,7 @@ async def validation_exception_handler(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         code="validation_error",
         message="Request validation failed",
-        details=exc.errors(),
+        details=_jsonable_errors(exc.errors()),
     )
 
 

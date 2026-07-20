@@ -9,6 +9,7 @@ Language codes are validated against :data:`~app.models.catalog.ALLOWED_LANGS`
 so an unknown ``lang`` is rejected at the edge, not by a DB CheckConstraint.
 """
 
+import re
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -20,6 +21,38 @@ from app.models.catalog import ALLOWED_LANGS
 _CODE_MAX: int = 128
 _SLUG_MAX: int = 255
 _NAME_MAX: int = 512
+
+# A URL slug must be lowercase alphanumeric words joined by single hyphens
+# (no leading/trailing/double hyphens). Enforced so product/category links are
+# always descriptive — a bare single letter or digit (e.g. ``/p/s``) is rejected.
+_SLUG_MIN: int = 2
+_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _validate_slug(value: str) -> str:
+    """Normalize and validate a URL slug (§2.1.1).
+
+    Whitespace is trimmed and the value is lowercased, then it must match a
+    clean slug pattern and be at least two characters — so links can never
+    degrade to a single letter or digit.
+
+    Args:
+        value: Candidate slug.
+
+    Returns:
+        str: The normalized, validated slug.
+
+    Raises:
+        ValueError: If the slug is too short or not a clean hyphenated slug.
+    """
+    slug = value.strip().lower()
+    if len(slug) < _SLUG_MIN:
+        raise ValueError(f"slug must be at least {_SLUG_MIN} characters")
+    if not _SLUG_RE.match(slug):
+        raise ValueError(
+            "slug must be lowercase alphanumeric words separated by single hyphens"
+        )
+    return slug
 
 
 def _validate_lang(value: str) -> str:
@@ -47,7 +80,7 @@ class CategoryTranslationIn(BaseModel):
 
     lang: str
     name: str = Field(min_length=1, max_length=_NAME_MAX)
-    slug: str = Field(min_length=1, max_length=_SLUG_MAX)
+    slug: str = Field(min_length=_SLUG_MIN, max_length=_SLUG_MAX)
     seo_title: str | None = None
     seo_description: str | None = None
 
@@ -55,6 +88,11 @@ class CategoryTranslationIn(BaseModel):
     @classmethod
     def _check_lang(cls, value: str) -> str:
         return _validate_lang(value)
+
+    @field_validator("slug")
+    @classmethod
+    def _check_slug(cls, value: str) -> str:
+        return _validate_slug(value)
 
 
 class CategoryCreate(BaseModel):
@@ -219,7 +257,7 @@ class ProductTranslationIn(BaseModel):
 
     lang: str
     name: str = Field(min_length=1, max_length=_NAME_MAX)
-    slug: str = Field(min_length=1, max_length=_SLUG_MAX)
+    slug: str = Field(min_length=_SLUG_MIN, max_length=_SLUG_MAX)
     description: str | None = None
     seo_title: str | None = None
     seo_description: str | None = None
@@ -228,6 +266,11 @@ class ProductTranslationIn(BaseModel):
     @classmethod
     def _check_lang(cls, value: str) -> str:
         return _validate_lang(value)
+
+    @field_validator("slug")
+    @classmethod
+    def _check_slug(cls, value: str) -> str:
+        return _validate_slug(value)
 
 
 class ProductCreate(BaseModel):

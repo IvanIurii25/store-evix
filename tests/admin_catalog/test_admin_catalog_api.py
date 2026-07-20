@@ -440,3 +440,57 @@ async def test_guard_blocks_non_staff(guest_client: AsyncClient) -> None:
     )
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "http_error"
+
+
+# --------------------------------------------------------------------------- #
+# Slug validation (links must never degrade to a single letter/digit)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("bad_slug", ["s", "5", "Bad Slug", "-lead", "double--hyphen"])
+async def test_create_category_rejects_bad_slug(
+    client: AsyncClient, bad_slug: str
+) -> None:
+    """A single char, spaces, or malformed hyphenation is rejected with 422."""
+    payload = {
+        "parent_id": None,
+        "is_active": False,
+        "translations": [
+            {"lang": "ru", "name": "n-ru", "slug": bad_slug},
+            {"lang": "ro", "name": "n-ro", "slug": "electronice-ro"},
+        ],
+    }
+    response = await client.post("/api/v1/admin/categories", json=payload)
+    assert response.status_code == 422, response.text
+
+
+async def test_create_product_rejects_single_char_slug(client: AsyncClient) -> None:
+    """A product translation slug of a single character is rejected with 422."""
+    root = (
+        await client.post("/api/v1/admin/categories", json=_cat_payload("Root", "root"))
+    ).json()
+    payload = {
+        "category_id": root["id"],
+        "code": "SKU-1",
+        "price": "10.00",
+        "translations": [
+            {"lang": "ru", "name": "phone-ru", "slug": "x"},
+            {"lang": "ro", "name": "phone-ro", "slug": "telefon-ro"},
+        ],
+    }
+    response = await client.post("/api/v1/admin/products", json=payload)
+    assert response.status_code == 422, response.text
+
+
+async def test_slug_is_normalized_to_lowercase(client: AsyncClient) -> None:
+    """A mixed-case slug is accepted and stored lowercased (clean links)."""
+    payload = {
+        "parent_id": None,
+        "is_active": False,
+        "translations": [
+            {"lang": "ru", "name": "n-ru", "slug": "Tehnika-RU"},
+            {"lang": "ro", "name": "n-ro", "slug": "Tehnica-RO"},
+        ],
+    }
+    response = await client.post("/api/v1/admin/categories", json=payload)
+    assert response.status_code == 201, response.text
+    slugs = {t["lang"]: t["slug"] for t in response.json()["translations"]}
+    assert slugs == {"ru": "tehnika-ru", "ro": "tehnica-ro"}
