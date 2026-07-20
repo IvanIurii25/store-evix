@@ -20,6 +20,16 @@ from app.models.order import DELIVERY_TYPES
 _DELIVERY_CHOICES: str = " | ".join(DELIVERY_TYPES)
 
 
+class DeliveryAddressIn(BaseModel):
+    """Inline courier address (guest or user), snapshotted onto the order so it
+    survives independently of any saved address (§2.4 snapshot pattern)."""
+
+    full_name: str = Field(min_length=1, max_length=255)
+    city: str = Field(min_length=1, max_length=255)
+    street: str = Field(min_length=1, max_length=255)
+    zip: str | None = Field(default=None, max_length=32)
+
+
 class QuoteRequest(BaseModel):
     """Request body for ``POST /checkout/quote`` — a pure predraft (§9)."""
 
@@ -30,7 +40,11 @@ class QuoteRequest(BaseModel):
     delivery_address_id: int | None = Field(
         default=None,
         gt=0,
-        description="Delivery address id (required for courier).",
+        description="Saved address id (courier; logged-in users).",
+    )
+    delivery_address: DeliveryAddressIn | None = Field(
+        default=None,
+        description="Inline courier address (guest or user). Alternative to id.",
     )
 
 
@@ -50,7 +64,11 @@ class CheckoutRequest(BaseModel):
     delivery_address_id: int | None = Field(
         default=None,
         gt=0,
-        description="Delivery address id (required for courier).",
+        description="Saved address id (courier; logged-in users).",
+    )
+    delivery_address: DeliveryAddressIn | None = Field(
+        default=None,
+        description="Inline courier address (guest or user). Alternative to id.",
     )
 
 
@@ -92,6 +110,10 @@ class OrderOut(BaseModel):
     total: Decimal
     delivery_type: str
     delivery_address_id: int | None
+    delivery_name: str | None = None
+    delivery_city: str | None = None
+    delivery_street: str | None = None
+    delivery_zip: str | None = None
     payment_method: str
     created_at: datetime
     items: list[OrderItemOut] = Field(default_factory=list)

@@ -184,6 +184,10 @@ class OrderRepository:
         total: Decimal,
         delivery_type: str,
         delivery_address_id: int | None,
+        delivery_name: str | None = None,
+        delivery_city: str | None = None,
+        delivery_street: str | None = None,
+        delivery_zip: str | None = None,
     ) -> Order:
         """Instantiate and stage a new ``new`` / ``pending`` COD order (§9.6).
 
@@ -197,7 +201,11 @@ class OrderRepository:
             delivery_cost: Delivery charge.
             total: ``subtotal - discount_total + delivery_cost``.
             delivery_type: ``pickup`` or ``courier``.
-            delivery_address_id: Address id (courier), else ``None``.
+            delivery_address_id: Saved address id (courier), else ``None``.
+            delivery_name: Courier address snapshot — recipient, else ``None``.
+            delivery_city: Courier address snapshot — city, else ``None``.
+            delivery_street: Courier address snapshot — street, else ``None``.
+            delivery_zip: Courier address snapshot — postal code, else ``None``.
 
         Returns:
             Order: The staged (not yet flushed) order.
@@ -215,6 +223,10 @@ class OrderRepository:
             total=total,
             delivery_type=delivery_type,
             delivery_address_id=delivery_address_id,
+            delivery_name=delivery_name,
+            delivery_city=delivery_city,
+            delivery_street=delivery_street,
+            delivery_zip=delivery_zip,
             payment_method="cod",
         )
         self.session.add(order)

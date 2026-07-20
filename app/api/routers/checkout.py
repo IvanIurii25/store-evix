@@ -104,6 +104,7 @@ async def quote(
             session_token=token,
             delivery_type=data.delivery_type,
             delivery_address_id=data.delivery_address_id,
+            delivery_address=data.delivery_address,
         )
     except EmptyCartError as exc:
         raise HTTPException(
@@ -153,6 +154,7 @@ async def checkout(
             phone=data.phone,
             delivery_type=data.delivery_type,
             delivery_address_id=data.delivery_address_id,
+            delivery_address=data.delivery_address,
         )
     except EmptyCartError as exc:
         raise HTTPException(

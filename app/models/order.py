@@ -80,6 +80,13 @@ class Order(Base, TimestampMixin):
         ForeignKey("address.id"),
         nullable=True,
     )
+    # Delivery address snapshot (courier). Captured at checkout so the order is
+    # immutable even if a saved address is later edited/deleted, and so guests
+    # (no saved address) can use courier. Null for pickup.
+    delivery_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_city: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_street: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_zip: Mapped[str | None] = mapped_column(String, nullable=True)
     payment_method: Mapped[str] = mapped_column(String, nullable=False, default="cod")
     promo_code: Mapped[str | None] = mapped_column(String, nullable=True)
 

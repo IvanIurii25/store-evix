@@ -24,7 +24,7 @@ from app.core.email import send_order_confirmation
 from app.models.cart import Cart
 from app.models.order import Order, OrderItem
 from app.repositories.order_repo import OrderRepository
-from app.schemas.order import OrderItemOut, OrderOut, QuoteOut
+from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,7 @@ class CheckoutService:
         session_token: UUID | None,
         delivery_type: str,
         delivery_address_id: int | None,
+        delivery_address: DeliveryAddressIn | None = None,
     ) -> QuoteOut:
         """Compute the checkout totals without creating an order (§9, idempotent).
 
@@ -106,7 +107,8 @@ class CheckoutService:
             user_id: Owning user id, or ``None`` for a guest.
             session_token: Guest cookie token, or ``None`` for a user.
             delivery_type: ``pickup`` or ``courier``.
-            delivery_address_id: Address id (required for courier).
+            delivery_address_id: Saved address id (courier; logged-in users).
+            delivery_address: Inline courier address (guest or user).
 
         Returns:
             QuoteOut: The subtotal / discount / delivery / total breakdown.
@@ -116,7 +118,9 @@ class CheckoutService:
             DeliveryAddressRequiredError: If courier is chosen without an address.
         """
         _cart, lines = await self._load_cart_lines(user_id, session_token)
-        return self._quote_from_lines(lines, delivery_type, delivery_address_id)
+        return self._quote_from_lines(
+            lines, delivery_type, delivery_address_id, delivery_address
+        )
 
     # ------------------------------------------------------------------ #
     # Checkout (atomic order creation)
@@ -130,6 +134,7 @@ class CheckoutService:
         phone: str,
         delivery_type: str,
         delivery_address_id: int | None,
+        delivery_address: DeliveryAddressIn | None = None,
     ) -> OrderOut:
         """Create an order from the caller's cart in one transaction (§9.6).
 
@@ -156,7 +161,9 @@ class CheckoutService:
             OutOfStockError: If any line's stock is insufficient at commit time.
         """
         cart, lines = await self._load_cart_lines(user_id, session_token)
-        totals = self._quote_from_lines(lines, delivery_type, delivery_address_id)
+        totals = self._quote_from_lines(
+            lines, delivery_type, delivery_address_id, delivery_address
+        )
 
         number = await self.repo.next_order_number()
         order = self.repo.add_order(
@@ -170,6 +177,10 @@ class CheckoutService:
             total=totals.total,
             delivery_type=delivery_type,
             delivery_address_id=delivery_address_id,
+            delivery_name=delivery_address.full_name if delivery_address else None,
+            delivery_city=delivery_address.city if delivery_address else None,
+            delivery_street=delivery_address.street if delivery_address else None,
+            delivery_zip=delivery_address.zip if delivery_address else None,
         )
         await self.session.flush()  # assign order.id
         # Pull DB-side ``created_at`` (server_default) onto the instance so the
@@ -261,13 +272,15 @@ class CheckoutService:
         lines: list[_PricedLine],
         delivery_type: str,
         delivery_address_id: int | None,
+        delivery_address: DeliveryAddressIn | None = None,
     ) -> QuoteOut:
         """Compute totals from resolved lines + delivery choice (§9.3–9.5).
 
         Args:
             lines: Resolved, stock-checked cart lines.
             delivery_type: ``pickup`` or ``courier``.
-            delivery_address_id: Address id (required for courier).
+            delivery_address_id: Saved address id (courier; logged-in users).
+            delivery_address: Inline courier address (guest or user).
 
         Returns:
             QuoteOut: The computed breakdown.
@@ -277,9 +290,8 @@ class CheckoutService:
         """
         subtotal = sum((line.line_total for line in lines), _ZERO)
         discount_total = _ZERO
-        delivery_cost = self._delivery_cost(
-            subtotal, delivery_type, delivery_address_id
-        )
+        has_address = delivery_address_id is not None or delivery_address is not None
+        delivery_cost = self._delivery_cost(subtotal, delivery_type, has_address)
         total = subtotal - discount_total + delivery_cost
         item_count = sum(line.qty for line in lines)
         return QuoteOut(
@@ -295,18 +307,18 @@ class CheckoutService:
         self,
         subtotal: Decimal,
         delivery_type: str,
-        delivery_address_id: int | None,
+        has_address: bool,
     ) -> Decimal:
         """Return the delivery charge for the chosen method (§9.4).
 
         ``pickup`` is free. ``courier`` costs ``settings.courier_rate`` unless the
         subtotal reaches ``settings.free_delivery_from`` (when configured), and
-        requires a ``delivery_address_id``.
+        requires a delivery address (saved id or inline).
 
         Args:
             subtotal: Sum of line totals.
             delivery_type: ``pickup`` or ``courier``.
-            delivery_address_id: Address id (required for courier).
+            has_address: Whether a courier address was supplied (id or inline).
 
         Returns:
             Decimal: The delivery cost.
@@ -316,7 +328,7 @@ class CheckoutService:
         """
         if delivery_type == PICKUP:
             return _ZERO
-        if delivery_address_id is None:
+        if not has_address:
             raise DeliveryAddressRequiredError(
                 "Courier delivery requires a delivery address"
             )
@@ -354,6 +366,10 @@ class CheckoutService:
             total=order.total,
             delivery_type=order.delivery_type,
             delivery_address_id=order.delivery_address_id,
+            delivery_name=order.delivery_name,
+            delivery_city=order.delivery_city,
+            delivery_street=order.delivery_street,
+            delivery_zip=order.delivery_zip,
             payment_method=order.payment_method,
             created_at=order.created_at,
             items=[OrderItemOut.model_validate(item) for item in item_models],

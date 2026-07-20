@@ -85,6 +85,57 @@ async def test_quote_courier_without_address_422(
     assert resp.json()["error"]["code"] == "http_error"
 
 
+async def test_quote_courier_inline_address(client: AsyncClient, add_product) -> None:
+    """A guest inline courier address satisfies the requirement (no saved id)."""
+    await _seed_line(client, add_product, product_id=1, price="100.00", qty=1)
+
+    resp = await client.post(
+        _QUOTE,
+        json={
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert Decimal(resp.json()["delivery_cost"]) == Decimal("50")
+
+
+async def test_checkout_guest_courier_inline_snapshot(
+    client: AsyncClient, add_product
+) -> None:
+    """Guest courier checkout snapshots the inline address onto the order."""
+    await _seed_line(client, add_product, product_id=1, price="100.00", qty=1)
+
+    resp = await client.post(
+        _CHECKOUT,
+        json={
+            "email": "guest@example.com",
+            "phone": "+37360000000",
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+                "zip": "MD-2001",
+            },
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert Decimal(body["delivery_cost"]) == Decimal("50")
+    assert body["delivery_address_id"] is None
+    assert body["delivery_name"] == "Ion Guest"
+    assert body["delivery_city"] == "Chișinău"
+    assert body["delivery_street"] == "str. Testului 1"
+    assert body["delivery_zip"] == "MD-2001"
+
+
 async def test_quote_empty_cart_400(client: AsyncClient) -> None:
     resp = await client.post(_QUOTE, json={"delivery_type": "pickup"})
 
