@@ -156,6 +156,9 @@ services:
         PUBLIC_API_BASE: https://shop.evix.md
         SITE_URL: https://shop.evix.md
     restart: unless-stopped
+    # SSR fetches the API internally (no edge hairpin); browser uses PUBLIC base.
+    environment:
+      API_INTERNAL_BASE: http://app:8000
     depends_on:
       app:
         condition: service_healthy

@@ -62,6 +62,19 @@ class Storage(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    async def delete(self, url: str) -> None:
+        """Best-effort removal of the object previously returned by ``save``.
+
+        Implementations must not raise if the object is already gone — media
+        deletion is driven by the DB row, and a missing/orphaned file must never
+        block removing that row.
+
+        Args:
+            url: The public URL originally returned by :meth:`save`.
+        """
+        raise NotImplementedError
+
 
 class LocalStorage(Storage):
     """Filesystem backend writing under ``media_root`` (dev / static-mount)."""
@@ -93,6 +106,16 @@ class LocalStorage(Storage):
         with destination.open("wb") as out:
             out.write(data)
         return f"{self._url_prefix}/{name}"
+
+    async def delete(self, url: str) -> None:
+        """Unlink the file under ``media_root`` named by the URL's basename.
+
+        Args:
+            url: The public URL returned by :meth:`save`.
+        """
+        name = Path(url).name
+        if name:
+            (self._root / name).unlink(missing_ok=True)
 
 
 class S3Storage(Storage):
@@ -153,6 +176,29 @@ class S3Storage(Storage):
                 ContentType=content_type,
             )
         return self._public_url_for(key)
+
+    async def delete(self, url: str) -> None:
+        """Delete the bucket object whose key is ``media/<basename-of-url>``.
+
+        The key is reconstructed from the URL basename (``save`` always stores
+        under ``media/<uuid>.<ext>``), so it is independent of whether a public
+        CDN base is configured. Missing keys are a no-op on S3/MinIO.
+
+        Args:
+            url: The public URL returned by :meth:`save`.
+        """
+        name = Path(url).name
+        if not name:
+            return
+        key = f"{_S3_KEY_PREFIX}/{name}"
+        async with self._session.client(
+            "s3",
+            endpoint_url=self._endpoint_url,
+            aws_access_key_id=self._access_key,
+            aws_secret_access_key=self._secret_key,
+            region_name=self._region,
+        ) as client:
+            await client.delete_object(Bucket=self._bucket, Key=key)
 
 
 def get_storage(config: Settings | None = None) -> Storage:

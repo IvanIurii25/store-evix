@@ -47,6 +47,9 @@ from app.services.catalog_service import CatalogService
 # Default media kind for v1 uploads (only images are allowed — §2.1).
 DEFAULT_MEDIA_KIND: str = "image"
 
+# Stock at or below this is surfaced as "low stock" in the back-office (§4.2).
+LOW_STOCK_THRESHOLD: int = 5
+
 
 class AdminCatalogError(Exception):
     """Base class for admin-catalog domain errors (mapped to HTTP by the router)."""
@@ -616,6 +619,78 @@ class AdminCatalogService:
         await self.session.refresh(media)
         return media
 
+    async def delete_product_media(self, product_id: int, media_id: int) -> None:
+        """Remove one image from a product (DB row + best-effort stored object).
+
+        The stored object is deleted after the row so a storage hiccup never
+        leaves a dangling DB row; a missing object is a no-op. The card is
+        rebuilt when the product is active (the main image may have changed).
+
+        Args:
+            product_id: Owning product.
+            media_id: The media row to delete.
+
+        Raises:
+            AdminNotFoundError: If the product or the media row does not exist
+                (the media must belong to the given product).
+        """
+        product = await self._get_product(product_id)
+        media = await self.session.get(Media, media_id)
+        if media is None or media.product_id != product_id:
+            raise AdminNotFoundError(f"Media not found: {media_id}")
+        url = media.url
+        await self.session.delete(media)
+        await self.session.flush()
+        if product.is_active:
+            await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        # Best-effort object removal — never blocks the committed row deletion.
+        try:
+            await get_storage().delete(url)
+        except Exception:  # noqa: BLE001 — storage cleanup must not fail the op
+            pass
+
+    async def reorder_product_media(
+        self,
+        product_id: int,
+        ordered_ids: list[int],
+    ) -> list[Media]:
+        """Set media ``position`` from the given order and return the new list.
+
+        ``ordered_ids`` must be exactly the product's current media ids (a full
+        permutation) — this keeps the reorder unambiguous and rejects stale
+        clients. The first id becomes the main image, so an active product's
+        card is rebuilt.
+
+        Args:
+            product_id: Owning product.
+            ordered_ids: The media ids in their desired display order.
+
+        Returns:
+            list[Media]: The product's media in the new order.
+
+        Raises:
+            AdminNotFoundError: If the product does not exist.
+            AdminValidationError: If ``ordered_ids`` is not a permutation of the
+                product's current media ids.
+        """
+        product = await self._get_product(product_id)
+        current = await self.get_product_media(product_id)
+        if set(ordered_ids) != {media.id for media in current} or len(
+            ordered_ids
+        ) != len(current):
+            raise AdminValidationError(
+                "ordered_ids must be a permutation of the product's media ids"
+            )
+        by_id = {media.id: media for media in current}
+        for position, media_id in enumerate(ordered_ids):
+            by_id[media_id].position = position
+        await self.session.flush()
+        if product.is_active:
+            await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        return await self.get_product_media(product_id)
+
     @staticmethod
     def _is_allowed_image(upload: UploadFile) -> bool:
         """Return whether the upload declares an allowed image content type."""
@@ -635,6 +710,10 @@ class AdminCatalogService:
         self,
         search: str | None,
         limit: int = 50,
+        *,
+        is_active: bool | None = None,
+        low_stock: bool = False,
+        on_sale: bool = False,
     ) -> list[tuple[Product, str | None]]:
         """Search products for the back-office by ``code`` or translated name.
 
@@ -643,6 +722,12 @@ class AdminCatalogService:
                 product ``code`` and any translation ``name``. ``None``/empty
                 returns the most recent products.
             limit: Maximum number of rows to return.
+            is_active: Restrict to active (``True``) / inactive (``False``)
+                products, or ``None`` for both.
+            low_stock: When ``True``, only products with ``qty`` at or below
+                :data:`LOW_STOCK_THRESHOLD` (the back-office restock queue).
+            on_sale: When ``True``, only products on sale — ``old_price`` set and
+                strictly greater than ``price`` (the "Акции" list, §4.2).
 
         Returns:
             list[tuple[Product, str | None]]: ``(product, matched_name)`` rows.
@@ -663,6 +748,15 @@ class AdminCatalogService:
                     Product.code.ilike(term),
                     ProductTranslation.name.ilike(term),
                 )
+            )
+        if is_active is not None:
+            stmt = stmt.where(Product.is_active.is_(is_active))
+        if low_stock:
+            stmt = stmt.where(Product.qty <= LOW_STOCK_THRESHOLD)
+        if on_sale:
+            stmt = stmt.where(
+                Product.old_price.is_not(None),
+                Product.old_price > Product.price,
             )
         rows = (await self.session.execute(stmt)).all()
         # Deduplicate on product id (outer join may yield two translation rows).

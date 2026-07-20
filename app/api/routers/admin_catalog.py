@@ -33,6 +33,8 @@ from app.schemas.admin_catalog import (
     CategoryTranslationOut,
     CategoryUpdate,
     MediaAdminOut,
+    MediaListOut,
+    MediaReorderRequest,
     ProductAttributeSetRequest,
     ProductCreate,
     ProductOut,
@@ -259,9 +261,27 @@ async def search_products(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
     search: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
+    is_active: bool | None = Query(
+        default=None,
+        description="Restrict to active (true) / inactive (false) products.",
+    ),
+    low_stock: bool = Query(
+        default=False,
+        description="Only products at or below the low-stock threshold.",
+    ),
+    on_sale: bool = Query(
+        default=False,
+        description="Only products on sale (old_price set and > price).",
+    ),
 ) -> ProductSearchResult:
-    """Search back-office products by ``code`` or translated name."""
-    rows = await service.search_products(search, limit)
+    """Search back-office products by ``code`` or translated name, with filters."""
+    rows = await service.search_products(
+        search,
+        limit,
+        is_active=is_active,
+        low_stock=low_stock,
+        on_sale=on_sale,
+    )
     return ProductSearchResult(
         data=[
             ProductSearchItem(
@@ -373,6 +393,41 @@ async def upload_product_media(
     except (AdminNotFoundError, AdminValidationError) as exc:
         _raise_http(exc)
     return MediaAdminOut.model_validate(media)
+
+
+@router.put(
+    "/products/{product_id}/media/reorder",
+    response_model=MediaListOut,
+)
+async def reorder_product_media(
+    product_id: int,
+    payload: MediaReorderRequest,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> MediaListOut:
+    """Set the display order of a product's images (first id = main image)."""
+    try:
+        media = await service.reorder_product_media(product_id, payload.ordered_ids)
+    except (AdminNotFoundError, AdminValidationError) as exc:
+        _raise_http(exc)
+    return MediaListOut(data=[MediaAdminOut.model_validate(row) for row in media])
+
+
+@router.delete(
+    "/products/{product_id}/media/{media_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_product_media(
+    product_id: int,
+    media_id: int,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> None:
+    """Remove one image from a product (DB row + best-effort stored object)."""
+    try:
+        await service.delete_product_media(product_id, media_id)
+    except AdminNotFoundError as exc:
+        _raise_http(exc)
 
 
 # --------------------------------------------------------------------------- #

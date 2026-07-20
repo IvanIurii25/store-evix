@@ -24,6 +24,9 @@ class AppUser(Base, TimestampMixin):
     phone: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_staff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Placeholder for a future staff role model (§6.4). v1 authorizes purely on
+    # ``is_staff``; ``role`` is nullable and unused by the request flow yet.
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
     loyalty_points: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
         nullable=False,

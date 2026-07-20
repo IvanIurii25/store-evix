@@ -325,6 +325,22 @@ class MediaAdminOut(BaseModel):
     position: int
 
 
+class MediaReorderRequest(BaseModel):
+    """Reorder a product's images: ``ordered_ids`` is the full new display order.
+
+    Must be a permutation of the product's current media ids; the first id
+    becomes the main image (§4.1). Empty is rejected — reordering needs items.
+    """
+
+    ordered_ids: list[int] = Field(min_length=1)
+
+
+class MediaListOut(BaseModel):
+    """Envelope for a product's ordered media list (reorder response)."""
+
+    data: list[MediaAdminOut] = Field(default_factory=list)
+
+
 class ProductOut(BaseModel):
     """Full admin view of a product (structure + translations + media)."""
 
