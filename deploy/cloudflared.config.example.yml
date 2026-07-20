@@ -1,0 +1,21 @@
+# Cloudflare Tunnel ingress for evix-store.
+# Copy to /home/evix/.cloudflared/config-evix-store.yml on the server and fill
+# the tunnel UUID (from `cloudflared tunnel create evix-store`). cloudflared runs
+# in the compose network, so it reaches services by their compose name.
+#
+# Path-based routing keeps the storefront same-origin: the browser calls
+# https://shop.evix.md/api/... (no CORS), routed to the API; everything else
+# goes to the Astro SSR front. Product media is a second hostname → MinIO.
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_UUID.json
+
+ingress:
+  - hostname: shop.evix.md
+    path: ^/api/.*
+    service: http://app:8000
+  - hostname: shop.evix.md
+    service: http://front:3000
+  - hostname: media.evix.md
+    service: http://minio:9000
+  - service: http_status:404
