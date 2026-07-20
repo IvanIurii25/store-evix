@@ -154,6 +154,7 @@ services:
       context: ../evix-store-front
       args:
         PUBLIC_API_BASE: https://shop.evix.md
+        SITE_URL: https://shop.evix.md
     restart: unless-stopped
     depends_on:
       app:
