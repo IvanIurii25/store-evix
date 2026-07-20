@@ -77,6 +77,9 @@ async def test_api_category_detail(seed, client):
     body = resp.json()
     assert body["id"] == 2
     assert [c["id"] for c in body["breadcrumbs"]] == [1, 2]
+    # both language slugs present for hreflang / the category switcher
+    slug_map = {entry["lang"]: entry["slug"] for entry in body["slugs"]}
+    assert slug_map == {"ru": "telefony", "ro": "telefoane"}
 
 
 @pytest.mark.asyncio

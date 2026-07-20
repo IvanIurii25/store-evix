@@ -24,6 +24,7 @@ from app.schemas.catalog import (
     Breadcrumb,
     CategoryDetail,
     CategoryNode,
+    CategorySlug,
     ProductCardOut,
     ProductDetail,
     ProductListing,
@@ -182,6 +183,8 @@ class CatalogService:
             )
             for child, child_tr in child_pairs
         ]
+        all_translations = await self.repo.get_category_translations(category.id)
+        slugs = [CategorySlug(lang=tr.lang, slug=tr.slug) for tr in all_translations]
         return CategoryDetail(
             id=category.id,
             name=translation.name,
@@ -190,6 +193,7 @@ class CatalogService:
             seo_description=translation.seo_description,
             breadcrumbs=breadcrumbs,
             children=children,
+            slugs=slugs,
         )
 
     async def _build_breadcrumbs(

@@ -47,6 +47,13 @@ class CategoryNode(BaseModel):
     children: list["CategoryNode"] = Field(default_factory=list)
 
 
+class CategorySlug(BaseModel):
+    """A ``(lang, slug)`` pair powering hreflang / the category switcher (§2.1.1)."""
+
+    lang: str
+    slug: str
+
+
 class CategoryDetail(BaseModel):
     """Category detail: localized name/slug + breadcrumbs + children + seo (§4)."""
 
@@ -57,6 +64,8 @@ class CategoryDetail(BaseModel):
     seo_description: str | None = None
     breadcrumbs: list[Breadcrumb] = Field(default_factory=list)
     children: list[CategoryNode] = Field(default_factory=list)
+    # Both language slugs so the frontend can build hreflang / a language switcher.
+    slugs: list[CategorySlug] = Field(default_factory=list)
 
 
 class ProductCardOut(BaseModel):

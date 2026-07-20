@@ -344,6 +344,23 @@ class CatalogRepository:
         )
         return list((await self.session.execute(stmt)).scalars().all())
 
+    async def get_category_translations(
+        self,
+        category_id: int,
+    ) -> list[CategoryTranslation]:
+        """Return all translations of a category (both languages, for slugs).
+
+        Args:
+            category_id: Category primary key.
+
+        Returns:
+            list[CategoryTranslation]: All translation rows for the category.
+        """
+        stmt = select(CategoryTranslation).where(
+            CategoryTranslation.category_id == category_id
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def get_product_media(self, product_id: int) -> list[Media]:
         """Return a product's media ordered by ``position`` (no N+1).
 
