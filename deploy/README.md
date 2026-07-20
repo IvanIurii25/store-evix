@@ -19,8 +19,10 @@ Storefront is **same-origin**: the browser calls `https://shop.evix.md/api/...`
 
 ```bash
 mkdir -p ~/apps && cd ~/apps
-git clone git@github.com:IvanIurii25/evix-store.git          # backend (+ compose)
-git clone git@github.com:IvanIurii25/evix-store-front.git    # frontend (built by compose)
+# NB: the backend GitHub repo is `store-evix`; clone it into `evix-store` so the
+# compose paths (../evix-store-front) and scripts line up.
+git clone git@github.com:IvanIurii25/store-evix.git evix-store       # backend (+ compose)
+git clone git@github.com:IvanIurii25/evix-store-front.git           # frontend (built by compose)
 
 cd ~/apps/evix-store
 cp .env.prod.example .env && chmod 600 .env
