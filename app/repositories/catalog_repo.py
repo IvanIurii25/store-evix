@@ -168,8 +168,9 @@ class CatalogRepository:
         lang: str,
         price_min: Decimal | None,
         price_max: Decimal | None,
+        value_ids: list[int] | None = None,
     ) -> Select:
-        """Attach category-subtree, language, active and price filters."""
+        """Attach category-subtree, language, active, price and facet filters."""
         # Subtree match: ``category_id`` appears anywhere in the card's ``path``.
         stmt = stmt.where(
             ProductCard.lang == lang,
@@ -180,7 +181,36 @@ class CatalogRepository:
             stmt = stmt.where(ProductCard.price >= price_min)
         if price_max is not None:
             stmt = stmt.where(ProductCard.price <= price_max)
+        if value_ids:
+            stmt = stmt.where(
+                ProductCard.product_id.in_(self._attribute_filter_subquery(value_ids))
+            )
         return stmt
+
+    @staticmethod
+    def _attribute_filter_subquery(value_ids: list[int]):
+        """Products matching the selected attribute values (AND across attributes,
+        OR within one attribute).
+
+        A product qualifies when its selected-value hits span **every** distinct
+        attribute present in the selection — i.e. at least one chosen value per
+        chosen attribute. The expected distinct-attribute count is derived from
+        the selection itself via a scalar subquery (no extra round-trip).
+        """
+        expected_attrs = (
+            select(func.count(func.distinct(AttributeValue.attribute_id)))
+            .where(AttributeValue.id.in_(value_ids))
+            .scalar_subquery()
+        )
+        return (
+            select(ProductAttribute.product_id)
+            .join(AttributeValue, AttributeValue.id == ProductAttribute.value_id)
+            .where(ProductAttribute.value_id.in_(value_ids))
+            .group_by(ProductAttribute.product_id)
+            .having(
+                func.count(func.distinct(AttributeValue.attribute_id)) == expected_attrs
+            )
+        )
 
     async def list_cards(
         self,
@@ -191,6 +221,7 @@ class CatalogRepository:
         limit: int,
         price_min: Decimal | None = None,
         price_max: Decimal | None = None,
+        value_ids: list[int] | None = None,
     ) -> list[ProductCard]:
         """Fetch one keyset page of listing cards from ``product_card``.
 
@@ -209,7 +240,7 @@ class CatalogRepository:
         """
         stmt = select(ProductCard)
         stmt = self._apply_listing_filters(
-            stmt, category_id, lang, price_min, price_max
+            stmt, category_id, lang, price_min, price_max, value_ids
         )
         if keyset_predicate is not None:
             stmt = stmt.where(keyset_predicate)

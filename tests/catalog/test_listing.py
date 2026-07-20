@@ -142,3 +142,58 @@ async def test_listing_excludes_inactive(seed):
 
     page = await service.list_products("telefoane", "ro", page_size=50)
     assert 200 not in {c.product_id for c in page.data}
+
+
+@pytest.mark.asyncio
+async def test_listing_filters_by_attribute_values(seed):
+    """value_ids facet filter: OR within an attribute, AND across attributes."""
+    await seed["build_tree"]()
+    session = seed["session"]
+    service: CatalogService = seed["service"]
+    m = seed["models"]
+
+    for i in (1, 2, 3):
+        await seed["add_product"](
+            session,
+            product_id=100 + i,
+            category_id=2,
+            code=f"AP-{i}",
+            price=Decimal(f"{i * 10}.00"),
+            qty=5,
+            slugs={"ru": f"ap-{i}-ru", "ro": f"ap-{i}-ro"},
+            names={"ru": f"Товар {i}", "ro": f"Produs {i}"},
+        )
+    # brand (10 Samsung / 11 Apple), color (20 Black / 21 White)
+    session.add_all(
+        [
+            m["Attribute"](id=1, code="brand"),
+            m["Attribute"](id=2, code="color"),
+            m["AttributeValue"](id=10, attribute_id=1),
+            m["AttributeValue"](id=11, attribute_id=1),
+            m["AttributeValue"](id=20, attribute_id=2),
+            m["AttributeValue"](id=21, attribute_id=2),
+        ]
+    )
+    await session.flush()
+    # p101 Samsung+Black, p102 Apple+Black, p103 Samsung+White
+    session.add_all(
+        [
+            m["ProductAttribute"](product_id=101, value_id=10),
+            m["ProductAttribute"](product_id=101, value_id=20),
+            m["ProductAttribute"](product_id=102, value_id=11),
+            m["ProductAttribute"](product_id=102, value_id=20),
+            m["ProductAttribute"](product_id=103, value_id=10),
+            m["ProductAttribute"](product_id=103, value_id=21),
+        ]
+    )
+    await session.flush()
+    await service.rebuild_cards([101, 102, 103])
+
+    async def ids(value_ids):
+        res = await service.list_products("telefoane", "ro", value_ids=value_ids)
+        return {c.product_id for c in res.data}
+
+    assert await ids([10]) == {101, 103}  # brand Samsung
+    assert await ids([10, 11]) == {101, 102, 103}  # OR within brand
+    assert await ids([10, 20]) == {101}  # Samsung AND Black
+    assert await ids([11, 21]) == set()  # Apple AND White — no product

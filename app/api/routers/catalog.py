@@ -85,6 +85,7 @@ async def list_category_products(
     cursor: str | None = Query(default=None),
     price_min: Decimal | None = Query(default=None, ge=0),
     price_max: Decimal | None = Query(default=None, ge=0),
+    value_ids: list[int] | None = Query(default=None),
     lang: str = Depends(get_lang),
     session: AsyncSession = Depends(get_session),
 ) -> ProductListing:
@@ -114,6 +115,7 @@ async def list_category_products(
             cursor=cursor,
             price_min=price_min,
             price_max=price_max,
+            value_ids=value_ids,
         )
     except NotFoundError as exc:
         raise HTTPException(

@@ -232,6 +232,7 @@ class CatalogService:
         cursor: str | None = None,
         price_min: Decimal | None = None,
         price_max: Decimal | None = None,
+        value_ids: list[int] | None = None,
         page_size: int = DEFAULT_PAGE_SIZE,
     ) -> ProductListing:
         """List a category's products from the read-model, keyset-paginated.
@@ -272,6 +273,7 @@ class CatalogService:
             limit=limit + 1,
             price_min=price_min,
             price_max=price_max,
+            value_ids=value_ids,
         )
 
         has_more = len(cards) > limit
