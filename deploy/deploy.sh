@@ -18,6 +18,10 @@ echo "== build + migrate + up (app/front) =="
 $COMPOSE up -d --build
 echo "== ensure tunnel up =="
 $COMPOSE --profile tunnel up -d
+# Recreating app/front gives them new IPs; cloudflared caches the old ones and
+# starts returning "origin unreachable". Restart it so it re-resolves.
+echo "== restart cloudflared (re-resolve origin IPs) =="
+$COMPOSE --profile tunnel restart cloudflared
 
 echo "== status =="; $COMPOSE ps
 echo "== smoke =="

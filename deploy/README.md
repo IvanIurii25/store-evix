@@ -61,8 +61,26 @@ docker compose -f docker-compose.prod.yml exec app uv run python scripts/create_
 - **DB backup:** cron `0 3 */3 * * bash ~/apps/evix-store/deploy/pg_backup.sh` → `~/evix-store-backups/` (keeps 5).
 - **Restore:** `cat ~/evix-store-backups/evix-store_<ts>.dump | docker compose -f docker-compose.prod.yml exec -T db pg_restore -U evix -d evix_store --clean --if-exists`.
 
-## Notes / follow-ons
+## Status (2026-07-20)
 
-- **Email** defaults to `console` (order-confirmation is logged, not sent). Set `EMAIL_BACKEND=smtp` + SMTP creds in `.env` when a relay is available.
-- **SSR fetch hop:** SSR currently fetches via `https://shop.evix.md` (through the edge). An internal base (`http://app:8000`) for server-side calls would drop a hop — small follow-on (needs a server/client base split in `api/client.ts`).
+Live at **https://shop.evix.md** (TLS via Cloudflare). All routes 200: home/`/ro`/`/ru`,
+category, PDP, search, cart, `sitemap-{ro,ru}.xml` + `robots.txt`; `/api/v1/*` same-origin;
+media on `media.evix.md`. Catalog seeded (6 demo products, images are `cdn.example`
+placeholders — upload real ones via the admin API → MinIO). Staff user in
+`~/apps/evix-store/ADMIN_CREDS.txt`. All services `restart: unless-stopped`.
+
+## Notes / gotchas
+
+- **SSR uses an internal API base** (`API_INTERNAL_BASE=http://app:8000`, set on the
+  `front` service) — server-side fetch must NOT hairpin out to the public domain
+  (that fails inside the network). Browser islands use the public base.
+- **cloudflared after a rebuild:** recreating `app`/`front` gives new IPs and
+  cloudflared caches the old ones (`origin unreachable`). `deploy.sh` restarts it;
+  do the same after any manual `up --build`.
+- **Verifying from the LAN/Tailscale:** the server's own resolver may cache the fresh
+  CNAME as AAAA-only and it has no IPv6 route → `curl` gives `000`. Real users are fine
+  (A records exist: `dig @1.1.1.1 A shop.evix.md`). To test locally, pin IPv4:
+  `curl --resolve shop.evix.md:443:104.21.68.244 https://shop.evix.md/...`.
+- **Email** defaults to `console` (order-confirmation logged, not sent). Set
+  `EMAIL_BACKEND=smtp` + creds in `.env` when a relay is available.
 - **Static IP / Ethernet / DHCP reservation** on the router — see `base_server_msi_info.md`.

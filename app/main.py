@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routers.admin_catalog import router as admin_catalog_router
 from app.api.routers.admin_orders import router as admin_orders_router
+from app.api.routers.admin_settings import router as admin_settings_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.cart import router as cart_router
 from app.api.routers.catalog import router as catalog_router
