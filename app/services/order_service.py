@@ -1,0 +1,176 @@
+"""Order state-machine service (stage B6, §8).
+
+The original system had NO enforced transition table — any code could assign any
+status (§8). Here transitions are validated against explicit dictionaries; an
+illegal move raises a domain error instead of silently mutating the row.
+
+Two independent axes (§8):
+
+* ``status`` (fulfilment): ``new → confirmed → done``; ``canceled`` from
+  ``{new, confirmed}``.
+* ``payment_status`` (COD): ``pending → paid``; ``paid → refunded``.
+
+Every accepted transition appends an ``order_status_history`` row. Terminal side
+effects (e.g. returning stock on cancel) run **after** ``commit`` — never in the
+middle of the transaction (§8). The service commits its own unit of work.
+"""
+
+import logging
+from collections.abc import Callable, Coroutine
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.order import Order
+from app.repositories.order_repo import OrderRepository
+
+logger = logging.getLogger(__name__)
+
+# Allowed fulfilment-status transitions (§8). Key = current, value = reachable.
+STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    "new": frozenset({"confirmed", "canceled"}),
+    "confirmed": frozenset({"done", "canceled"}),
+    "done": frozenset(),
+    "canceled": frozenset(),
+}
+
+# Allowed payment-status transitions (COD, §8).
+PAYMENT_TRANSITIONS: dict[str, frozenset[str]] = {
+    "pending": frozenset({"paid"}),
+    "paid": frozenset({"refunded"}),
+    "refunded": frozenset(),
+}
+
+# Fulfilment statuses whose entry returns reserved stock to inventory (§8).
+_STOCK_RETURNING_STATUSES: frozenset[str] = frozenset({"canceled"})
+
+
+class OrderError(Exception):
+    """Base class for order domain errors (mapped to HTTP by the router)."""
+
+
+class IllegalTransitionError(OrderError):
+    """The requested status/payment transition is not allowed by the machine."""
+
+
+class OrderService:
+    """Enforced order state machine bound to one session (§8)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind the service to a session and its repository.
+
+        Args:
+            session: Active async session (request-scoped or test-scoped).
+        """
+        self.session = session
+        self.repo = OrderRepository(session)
+
+    async def transition(
+        self,
+        order: Order,
+        *,
+        to_status: str | None = None,
+        to_payment_status: str | None = None,
+        changed_by: str = "system",
+    ) -> Order:
+        """Validate and apply a status and/or payment-status transition (§8).
+
+        Exactly the axes requested are moved; each accepted move writes an
+        ``order_status_history`` row. An illegal move raises before any mutation
+        so the order is never left in an inconsistent state. Terminal side
+        effects (stock return on cancel) run after ``commit``.
+
+        Args:
+            order: The order to transition (mutated in place).
+            to_status: Target fulfilment status, or ``None`` to leave unchanged.
+            to_payment_status: Target payment status, or ``None`` to leave
+                unchanged.
+            changed_by: Actor recorded in history (``system`` / ``admin`` / id).
+
+        Returns:
+            Order: The transitioned order.
+
+        Raises:
+            IllegalTransitionError: If any requested move is not allowed.
+        """
+        self._validate(order.status, to_status, STATUS_TRANSITIONS, "status")
+        self._validate(
+            order.payment_status,
+            to_payment_status,
+            PAYMENT_TRANSITIONS,
+            "payment_status",
+        )
+
+        after_commit: list[Callable[[], Coroutine[Any, Any, None]]] = []
+
+        if to_status is not None:
+            self.repo.add_status_history(
+                order_id=order.id,
+                from_status=order.status,
+                to_status=to_status,
+                changed_by=changed_by,
+            )
+            if to_status in _STOCK_RETURNING_STATUSES:
+                after_commit.append(self._make_stock_return(order.id))
+            order.status = to_status
+
+        if to_payment_status is not None:
+            self.repo.add_status_history(
+                order_id=order.id,
+                from_status=order.payment_status,
+                to_status=to_payment_status,
+                changed_by=changed_by,
+            )
+            order.payment_status = to_payment_status
+
+        await self.session.commit()
+        for side_effect in after_commit:
+            await side_effect()
+        return order
+
+    def _validate(
+        self,
+        current: str,
+        target: str | None,
+        table: dict[str, frozenset[str]],
+        axis: str,
+    ) -> None:
+        """Raise if ``current → target`` is not an allowed move on ``axis``.
+
+        Args:
+            current: Current value of the axis.
+            target: Requested value, or ``None`` (no-op — always valid).
+            table: The transition table for this axis.
+            axis: Axis name (for the error message).
+
+        Raises:
+            IllegalTransitionError: If the move is not permitted.
+        """
+        if target is None:
+            return
+        if target not in table.get(current, frozenset()):
+            raise IllegalTransitionError(
+                f"Illegal {axis} transition: {current} -> {target}"
+            )
+
+    def _make_stock_return(
+        self,
+        order_id: int,
+    ) -> Callable[[], Coroutine[Any, Any, None]]:
+        """Build the post-commit stock-return side effect for a canceled order.
+
+        v1 keeps this a logged stub: real inventory return on cancel is wired in
+        with the admin transition flow (§8). Kept out of the transaction body so
+        a failing side effect never rolls back a committed status change.
+
+        Args:
+            order_id: The canceled order id.
+
+        Returns:
+            Callable: A coroutine factory to run after commit.
+        """
+
+        async def _run() -> None:
+            logger.info("order %s canceled: stock-return side effect (stub)", order_id)
+
+        return _run

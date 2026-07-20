@@ -1,0 +1,59 @@
+# Adapted from SmartSuggest's quality-check workflow, reworked for our stack
+# (uv + ruff + Postgres/Redis service containers). MinIO/MailHog are not provided
+# here, so the 4 S3/SMTP integration tests skip cleanly; everything else runs.
+# Locally the full suite (incl. those 4) runs via `make up && make test`.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: evix
+          POSTGRES_PASSWORD: evix
+          POSTGRES_DB: evix_store
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U evix"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      EVIX_TEST_DB: evix_test
+      DATABASE_URL: postgresql+asyncpg://evix:evix@localhost:55432/evix_store
+      REDIS_URL: redis://localhost:56379/0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Run tests
+        run: uv run pytest -q
