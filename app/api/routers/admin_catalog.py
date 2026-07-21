@@ -160,6 +160,31 @@ async def _build_attribute_out(
 # --------------------------------------------------------------------------- #
 # Categories
 # --------------------------------------------------------------------------- #
+@router.get("/categories", response_model=list[CategoryOut])
+async def list_categories(
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> list[CategoryOut]:
+    """Return every category (active or not) as a flat, tree-orderable list."""
+    categories = await service.list_categories()
+    translations = await service.get_category_out_data(categories)
+    return [
+        CategoryOut(
+            id=category.id,
+            parent_id=category.parent_id,
+            path=list(category.path),
+            depth=category.depth,
+            position=category.position,
+            is_active=category.is_active,
+            translations=[
+                CategoryTranslationOut.model_validate(tr)
+                for tr in translations.get(category.id, [])
+            ],
+        )
+        for category in categories
+    ]
+
+
 @router.post(
     "/categories",
     response_model=CategoryOut,
@@ -310,6 +335,20 @@ async def create_product(
     try:
         product = await service.create_product(payload)
     except (AdminNotFoundError, CatalogNotFoundError, PublicationError) as exc:
+        _raise_http(exc)
+    return await _build_product_out(service, product)
+
+
+@router.get("/products/{product_id}", response_model=ProductOut)
+async def get_product(
+    product_id: int,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> ProductOut:
+    """Return one product's full admin view (structure + translations + media)."""
+    try:
+        product = await service._get_product(product_id)  # noqa: SLF001
+    except AdminNotFoundError as exc:
         _raise_http(exc)
     return await _build_product_out(service, product)
 

@@ -177,9 +177,7 @@ class StaffService:
 
         would_lose_access = (is_staff is False) or (is_active is False)
         if would_lose_access and await self._is_last_active_staff(user):
-            raise StaffConflictError(
-                "Cannot remove the last active staff account"
-            )
+            raise StaffConflictError("Cannot remove the last active staff account")
 
         if is_active is not None:
             user.is_active = is_active

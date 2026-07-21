@@ -159,6 +159,8 @@ services:
     # SSR fetches the API internally (no edge hairpin); browser uses PUBLIC base.
     environment:
       API_INTERNAL_BASE: http://app:8000
+      # Pre-launch: noindex meta + robots Disallow all. Set to false at launch.
+      SITE_NOINDEX: 'true'
     depends_on:
       app:
         condition: service_healthy

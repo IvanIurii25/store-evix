@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routers.admin_catalog import router as admin_catalog_router
+from app.api.routers.admin_customers import router as admin_customers_router
+from app.api.routers.admin_dashboard import router as admin_dashboard_router
 from app.api.routers.admin_orders import router as admin_orders_router
 from app.api.routers.admin_settings import router as admin_settings_router
 from app.api.routers.auth import router as auth_router
@@ -18,6 +20,7 @@ from app.api.routers.checkout import router as checkout_router
 from app.api.routers.health import router as health_router
 from app.api.routers.orders import router as orders_router
 from app.api.routers.search import router as search_router
+from app.api.routers.track import router as track_router
 from app.api.routers.users import router as users_router
 from app.core.config import settings
 from app.core.db import dispose_engine
@@ -73,6 +76,10 @@ def create_app() -> FastAPI:
     app.include_router(users_router, prefix=API_V1_PREFIX)
     app.include_router(admin_catalog_router, prefix=API_V1_PREFIX)
     app.include_router(admin_orders_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_customers_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_dashboard_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_settings_router, prefix=API_V1_PREFIX)
+    app.include_router(track_router, prefix=API_V1_PREFIX)
 
     # Serve admin-uploaded media locally in dev (§10; MinIO/S3 in prod — see README).
     media_dir = Path(settings.media_root)

@@ -199,6 +199,38 @@ async def test_filter_low_stock(client: AsyncClient) -> None:
     assert ids == {low, zero}
 
 
+async def test_get_single_product(client: AsyncClient) -> None:
+    """GET /admin/products/{id} returns the full admin product view."""
+    category_id = await _make_category(client)
+    product_id = await _make_product(client, category_id, "SKU-GET")
+    resp = await client.get(f"/api/v1/admin/products/{product_id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == product_id
+    assert body["code"] == "SKU-GET"
+    assert {tr["lang"] for tr in body["translations"]} == {"ru", "ro"}
+
+
+async def test_get_single_product_404(client: AsyncClient) -> None:
+    """An unknown product id yields 404."""
+    resp = await client.get("/api/v1/admin/products/999999")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "not_found"
+
+
+async def test_list_categories_includes_inactive(client: AsyncClient) -> None:
+    """GET /admin/categories returns all categories, active or not, flat."""
+    category_id = await _make_category(client)
+    resp = await client.get("/api/v1/admin/categories")
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert category_id in ids
+    # The created category is inactive by default — must still be listed.
+    row = next(r for r in resp.json() if r["id"] == category_id)
+    assert row["is_active"] is False
+    assert {tr["lang"] for tr in row["translations"]} == {"ru", "ro"}
+
+
 async def test_filter_is_active(client: AsyncClient) -> None:
     """``is_active=false`` returns only inactive products."""
     category_id = await _make_category(client)

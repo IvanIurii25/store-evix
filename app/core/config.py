@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # Rate limiting (§5.4), Redis-backed. Format "<count>/<window_seconds>".
     rate_limit_login: str = "5/60"
     rate_limit_checkout: str = "10/60"
+    # Pageview tracking is one hit per navigation — a generous per-IP budget
+    # that only trips on obvious floods (admin §6.3).
+    rate_limit_track: str = "120/60"
 
     @property
     def cors_origins_list(self) -> list[str]:

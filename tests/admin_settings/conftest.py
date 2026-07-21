@@ -1,0 +1,85 @@
+"""Admin-settings test fixtures (§6.4).
+
+Wires a local FastAPI app that mounts only the admin-settings router under
+``/api/v1``, with ``get_session`` bound to the commit-safe ``db_session`` and
+``current_staff`` overridden to a fixed persisted staff user. A ``guest_client``
+(no override) exercises the real guard.
+
+Run with ``EVIX_TEST_DB=evix_test_admin_settings``.
+"""
+
+from collections.abc import AsyncGenerator
+
+import pytest_asyncio
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import current_staff
+from app.api.routers.admin_settings import router as admin_settings_router
+from app.core.db import get_session
+from app.core.errors import register_exception_handlers
+from app.models.user import AppUser
+
+_API_V1_PREFIX = "/api/v1"
+
+# Fixed id for the overridden authenticated staff user.
+TEST_STAFF_ID: int = 8101
+
+
+def _build_app(db_session: AsyncSession) -> FastAPI:
+    """Assemble a minimal app mounting the admin-settings router."""
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(admin_settings_router, prefix=_API_V1_PREFIX)
+
+    async def _override_session() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    app.dependency_overrides[get_session] = _override_session
+    return app
+
+
+@pytest_asyncio.fixture
+async def staff_user(db_session: AsyncSession) -> AppUser:
+    """Persist and return a fixed authenticated staff user."""
+    user = AppUser(
+        id=TEST_STAFF_ID,
+        email="admin-settings@example.com",
+        password_hash="x",
+        is_active=True,
+        is_staff=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+@pytest_asyncio.fixture
+async def client(
+    db_session: AsyncSession,
+    staff_user: AppUser,
+) -> AsyncGenerator[AsyncClient, None]:
+    """Staff-path client with ``current_staff`` overridden to the staff user."""
+    app = _build_app(db_session)
+
+    async def _override_staff() -> AppUser:
+        return staff_user
+
+    app.dependency_overrides[current_staff] = _override_staff
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        yield http
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def guest_client(
+    db_session: AsyncSession,
+) -> AsyncGenerator[AsyncClient, None]:
+    """No-auth client: the real ``current_staff`` dependency runs (guard test)."""
+    app = _build_app(db_session)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        yield http
+    app.dependency_overrides.clear()

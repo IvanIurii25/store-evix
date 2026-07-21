@@ -358,6 +358,37 @@ class AdminCatalogService:
         )
         return list((await self.session.execute(stmt)).scalars().all())
 
+    async def list_categories(self) -> list[Category]:
+        """Return every category (active or not) ordered for tree assembly.
+
+        Ordered by ``path`` then ``position`` so a flat client can rebuild the
+        tree deterministically. Unlike the storefront catalog tree this includes
+        inactive categories — the back office manages them.
+        """
+        stmt = select(Category).order_by(Category.path, Category.position)
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_category_out_data(
+        self,
+        categories: list[Category],
+    ) -> dict[int, list[CategoryTranslation]]:
+        """Return ``{category_id: translations}`` for a set of categories.
+
+        One batched query (no per-category N+1) so the flat list endpoint can
+        attach translations to every node.
+        """
+        if not categories:
+            return {}
+        ids = [category.id for category in categories]
+        stmt = select(CategoryTranslation).where(
+            CategoryTranslation.category_id.in_(ids)
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        grouped: dict[int, list[CategoryTranslation]] = {cid: [] for cid in ids}
+        for row in rows:
+            grouped[row.category_id].append(row)
+        return grouped
+
     # ------------------------------------------------------------------ #
     # Products
     # ------------------------------------------------------------------ #
