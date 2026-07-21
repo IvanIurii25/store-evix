@@ -377,6 +377,7 @@ class ProductSearchItem(BaseModel):
     id: int
     code: str
     price: Decimal
+    old_price: Decimal | None = None
     is_active: bool
     name: str | None = None
 

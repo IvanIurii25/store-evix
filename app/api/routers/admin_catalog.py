@@ -318,6 +318,7 @@ async def search_products(
                 id=product.id,
                 code=product.code,
                 price=product.price,
+                old_price=product.old_price,
                 is_active=product.is_active,
                 name=name,
             )
