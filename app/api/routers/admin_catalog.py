@@ -107,6 +107,7 @@ async def _build_category_out(
         depth=category.depth,
         position=category.position,
         is_active=category.is_active,
+        cover_image_url=category.cover_image_url,
         translations=[CategoryTranslationOut.model_validate(tr) for tr in translations],
     )
 
@@ -178,6 +179,7 @@ async def list_categories(
             depth=category.depth,
             position=category.position,
             is_active=category.is_active,
+            cover_image_url=category.cover_image_url,
             translations=[
                 CategoryTranslationOut.model_validate(tr)
                 for tr in translations.get(category.id, [])

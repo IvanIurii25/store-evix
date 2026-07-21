@@ -56,6 +56,25 @@ async def test_create_category_with_translations(client: AsyncClient) -> None:
     assert body["path"] == [body["id"]]
     langs = {tr["lang"] for tr in body["translations"]}
     assert langs == {"ru", "ro"}
+    assert body["cover_image_url"] is None
+
+
+async def test_update_category_cover_image(client: AsyncClient) -> None:
+    """cover_image_url is set via PATCH, echoed back, and persisted."""
+    created = (
+        await client.post("/api/v1/admin/categories", json=_cat_payload("Root", "root"))
+    ).json()
+
+    resp = await client.patch(
+        f"/api/v1/admin/categories/{created['id']}",
+        json={"cover_image_url": "http://media/cat.jpg"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cover_image_url"] == "http://media/cat.jpg"
+
+    listing = (await client.get("/api/v1/admin/categories")).json()
+    row = next(c for c in listing if c["id"] == created["id"])
+    assert row["cover_image_url"] == "http://media/cat.jpg"
 
 
 async def test_move_recomputes_subtree_path_and_depth(

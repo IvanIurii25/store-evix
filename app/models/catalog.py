@@ -65,6 +65,8 @@ class Category(Base, TimestampMixin):
     depth: Mapped[int] = mapped_column(Integer, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Optional storefront tile image (public URL from the storage backend).
+    cover_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class CategoryTranslation(Base):

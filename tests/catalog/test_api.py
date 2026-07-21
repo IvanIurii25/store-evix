@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.catalog import Category
 from app.services.catalog_service import CatalogService
 
 
@@ -64,6 +65,22 @@ async def test_api_categories_tree(seed, client):
     assert len(body) == 1
     assert body[0]["slug"] == "electronice"
     assert body[0]["children"][0]["slug"] == "telefoane"
+
+
+@pytest.mark.asyncio
+async def test_api_category_tree_includes_cover(seed, client):
+    """A category's cover_image_url surfaces in the public tree (homepage tiles)."""
+    await seed["build_tree"]()
+    session = seed["session"]
+    category = await session.get(Category, 1)
+    category.cover_image_url = "http://media/cat1.jpg"
+    await session.flush()
+
+    resp = await client.get("/api/v1/catalog/categories?lang=ro")
+
+    assert resp.status_code == 200
+    root = next(c for c in resp.json() if c["id"] == 1)
+    assert root["cover_image_url"] == "http://media/cat1.jpg"
 
 
 @pytest.mark.asyncio

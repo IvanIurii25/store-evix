@@ -146,6 +146,7 @@ class CatalogService:
                 slug=translation.slug,
                 depth=category.depth,
                 position=category.position,
+                cover_image_url=category.cover_image_url,
             )
         roots: list[CategoryNode] = []
         for node in nodes.values():

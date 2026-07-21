@@ -45,6 +45,7 @@ class CategoryNode(BaseModel):
     slug: str
     depth: int
     position: int
+    cover_image_url: str | None = None
     children: list["CategoryNode"] = Field(default_factory=list)
 
 

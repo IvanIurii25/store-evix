@@ -110,6 +110,7 @@ class CategoryUpdate(BaseModel):
     parent_id: int | None = None
     position: int | None = None
     is_active: bool | None = None
+    cover_image_url: str | None = None
 
 
 class CategoryTranslationOut(BaseModel):
@@ -135,6 +136,7 @@ class CategoryOut(BaseModel):
     depth: int
     position: int
     is_active: bool
+    cover_image_url: str | None = None
     translations: list[CategoryTranslationOut] = Field(default_factory=list)
 
 
