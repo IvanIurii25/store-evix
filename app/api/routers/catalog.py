@@ -136,6 +136,52 @@ async def list_category_products(
         ) from exc
 
 
+@router.get("/products", response_model=ProductListing)
+async def list_all_products(
+    sort: ProductSort = Query(default=ProductSort.NEWEST),
+    on_sale: bool = Query(default=False),
+    cursor: str | None = Query(default=None),
+    price_min: Decimal | None = Query(default=None, ge=0),
+    price_max: Decimal | None = Query(default=None, ge=0),
+    lang: str = Depends(get_lang),
+    session: AsyncSession = Depends(get_session),
+) -> ProductListing:
+    """Return a keyset-paginated product listing across the whole store.
+
+    Powers the homepage store-wide rails ("newest", "on sale"). Same read-model
+    and cursor contract as the category listing, without a category constraint.
+
+    Args:
+        sort: Sort order.
+        on_sale: Keep only products with a struck-through ``old_price``.
+        cursor: Opaque cursor from a previous page (``None`` = first page).
+        price_min: Optional inclusive lower price bound.
+        price_max: Optional inclusive upper price bound.
+        lang: Resolved request language.
+        session: Injected async DB session.
+
+    Returns:
+        ProductListing: ``{data, next_cursor}`` envelope.
+
+    Raises:
+        HTTPException: 400 for a bad cursor.
+    """
+    service = CatalogService(session)
+    try:
+        return await service.list_all_products(
+            lang=lang,
+            sort=sort.value,
+            cursor=cursor,
+            price_min=price_min,
+            price_max=price_max,
+            on_sale=on_sale,
+        )
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
 @router.get("/products/{slug}", response_model=ProductDetail)
 async def get_product(
     slug: str,

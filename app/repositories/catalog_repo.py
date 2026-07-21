@@ -165,19 +165,28 @@ class CatalogRepository:
     def _apply_listing_filters(
         self,
         stmt: Select,
-        category_id: int,
+        category_id: int | None,
         lang: str,
         price_min: Decimal | None,
         price_max: Decimal | None,
         value_ids: list[int] | None = None,
+        on_sale: bool = False,
     ) -> Select:
-        """Attach category-subtree, language, active, price and facet filters."""
-        # Subtree match: ``category_id`` appears anywhere in the card's ``path``.
+        """Attach category-subtree, language, active, price and facet filters.
+
+        ``category_id`` is optional: ``None`` lists across the whole store
+        (homepage rails). ``on_sale`` keeps only cards with a struck-through
+        ``old_price``.
+        """
         stmt = stmt.where(
             ProductCard.lang == lang,
             ProductCard.is_active.is_(True),
-            ProductCard.path.any(category_id),
         )
+        # Subtree match: ``category_id`` appears anywhere in the card's ``path``.
+        if category_id is not None:
+            stmt = stmt.where(ProductCard.path.any(category_id))
+        if on_sale:
+            stmt = stmt.where(ProductCard.old_price.is_not(None))
         if price_min is not None:
             stmt = stmt.where(ProductCard.price >= price_min)
         if price_max is not None:
@@ -215,7 +224,7 @@ class CatalogRepository:
 
     async def list_cards(
         self,
-        category_id: int,
+        category_id: int | None,
         lang: str,
         order_columns: list,
         keyset_predicate,
@@ -223,6 +232,7 @@ class CatalogRepository:
         price_min: Decimal | None = None,
         price_max: Decimal | None = None,
         value_ids: list[int] | None = None,
+        on_sale: bool = False,
     ) -> list[ProductCard]:
         """Fetch one keyset page of listing cards from ``product_card``.
 
@@ -241,7 +251,7 @@ class CatalogRepository:
         """
         stmt = select(ProductCard)
         stmt = self._apply_listing_filters(
-            stmt, category_id, lang, price_min, price_max, value_ids
+            stmt, category_id, lang, price_min, price_max, value_ids, on_sale
         )
         if keyset_predicate is not None:
             stmt = stmt.where(keyset_predicate)

@@ -197,3 +197,130 @@ async def test_listing_filters_by_attribute_values(seed):
     assert await ids([10, 11]) == {101, 102, 103}  # OR within brand
     assert await ids([10, 20]) == {101}  # Samsung AND Black
     assert await ids([11, 21]) == set()  # Apple AND White — no product
+
+
+async def _seed_cross_category(seed) -> None:
+    """Products across two sibling top-level categories, some on sale.
+
+    Layout: cat 2 (telefoane, under root 1) holds p101 (sale) + p102 (no sale);
+    a fresh sibling top-level cat 3 (accesorii) holds p103 (sale). A store-wide
+    listing must span both subtrees; a category listing must not.
+    """
+    session = seed["session"]
+    service: CatalogService = seed["service"]
+    await seed["add_category"](
+        session,
+        category_id=3,
+        parent_id=None,
+        path=[3],
+        depth=0,
+        position=1,
+        slugs={"ru": "aksessuary", "ro": "accesorii"},
+        names={"ru": "Аксессуары", "ro": "Accesorii"},
+    )
+    await seed["add_product"](
+        session,
+        product_id=101,
+        category_id=2,
+        code="C2-1",
+        price=Decimal("100.00"),
+        old_price=Decimal("150.00"),
+        qty=5,
+        slugs={"ru": "c2-1-ru", "ro": "c2-1-ro"},
+        names={"ru": "Товар 1", "ro": "Produs 1"},
+    )
+    await seed["add_product"](
+        session,
+        product_id=102,
+        category_id=2,
+        code="C2-2",
+        price=Decimal("200.00"),
+        qty=5,
+        slugs={"ru": "c2-2-ru", "ro": "c2-2-ro"},
+        names={"ru": "Товар 2", "ro": "Produs 2"},
+    )
+    await seed["add_product"](
+        session,
+        product_id=103,
+        category_id=3,
+        code="C3-1",
+        price=Decimal("50.00"),
+        old_price=Decimal("80.00"),
+        qty=5,
+        slugs={"ru": "c3-1-ru", "ro": "c3-1-ro"},
+        names={"ru": "Товар 3", "ro": "Produs 3"},
+    )
+    await session.flush()
+    await service.rebuild_cards([101, 102, 103])
+
+
+@pytest.mark.asyncio
+async def test_list_all_products_spans_categories(seed):
+    """Store-wide listing returns products from disjoint category subtrees."""
+    await seed["build_tree"]()
+    await _seed_cross_category(seed)
+    service: CatalogService = seed["service"]
+
+    page = await service.list_all_products("ro", sort="newest", page_size=50)
+    assert [c.product_id for c in page.data] == [103, 102, 101]
+
+    # A single-category listing stays scoped: cat 3's product is excluded.
+    scoped = await service.list_products("telefoane", "ro", page_size=50)
+    assert {c.product_id for c in scoped.data} == {101, 102}
+
+
+@pytest.mark.asyncio
+async def test_list_all_products_on_sale_filter(seed):
+    """on_sale keeps only cards with a struck-through old_price."""
+    await seed["build_tree"]()
+    await _seed_cross_category(seed)
+    service: CatalogService = seed["service"]
+
+    page = await service.list_all_products("ro", on_sale=True, page_size=50)
+    assert {c.product_id for c in page.data} == {101, 103}
+    for card in page.data:
+        assert card.old_price is not None
+        assert card.badge == "sale"
+
+
+@pytest.mark.asyncio
+async def test_list_all_products_cursor_paginates(seed):
+    """Store-wide listing paginates by the same keyset cursor as categories."""
+    await seed["build_tree"]()
+    await _seed_cross_category(seed)
+    service: CatalogService = seed["service"]
+
+    first = await service.list_all_products("ro", sort="newest", page_size=2)
+    assert [c.product_id for c in first.data] == [103, 102]
+    assert first.next_cursor is not None
+
+    second = await service.list_all_products(
+        "ro", sort="newest", cursor=first.next_cursor, page_size=2
+    )
+    assert [c.product_id for c in second.data] == [101]
+    assert second.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_list_all_products_bad_cursor_raises(seed):
+    """A malformed store-wide cursor raises InvalidCursorError."""
+    await seed["build_tree"]()
+    await _seed_cross_category(seed)
+    service: CatalogService = seed["service"]
+
+    with pytest.raises(InvalidCursorError):
+        await service.list_all_products("ro", cursor="not-base64!!")
+
+
+@pytest.mark.asyncio
+async def test_list_all_products_api(seed, client):
+    """GET /catalog/products routes (not shadowed by /products/{slug}) + filters."""
+    await seed["build_tree"]()
+    await _seed_cross_category(seed)
+
+    resp = await client.get(
+        "/api/v1/catalog/products", params={"lang": "ro", "on_sale": "true"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {p["product_id"] for p in body["data"]} == {101, 103}

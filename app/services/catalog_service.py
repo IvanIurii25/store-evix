@@ -266,6 +266,90 @@ class CatalogService:
             raise NotFoundError(f"Category '{category_slug}' not found")
         category, _ = found
 
+        return await self._list_cards_page(
+            category_id=category.id,
+            lang=lang,
+            sort=sort,
+            cursor=cursor,
+            price_min=price_min,
+            price_max=price_max,
+            value_ids=value_ids,
+            page_size=page_size,
+        )
+
+    async def list_all_products(
+        self,
+        lang: str,
+        sort: str = "newest",
+        cursor: str | None = None,
+        price_min: Decimal | None = None,
+        price_max: Decimal | None = None,
+        on_sale: bool = False,
+        page_size: int = DEFAULT_PAGE_SIZE,
+    ) -> ProductListing:
+        """List products across the whole store, keyset-paginated (homepage rails).
+
+        Same read-model + cursor as :meth:`list_products` but without a category
+        constraint. Powers the store-wide "newest" and "on sale" rails.
+
+        Args:
+            lang: Requested language code.
+            sort: ``newest`` / ``price_asc`` / ``price_desc``.
+            cursor: Opaque cursor from a previous page (``None`` = first page).
+            price_min: Optional inclusive lower price bound.
+            price_max: Optional inclusive upper price bound.
+            on_sale: Keep only products with a struck-through ``old_price``.
+            page_size: Requested page size (clamped to ``MAX_PAGE_SIZE``).
+
+        Returns:
+            ProductListing: ``{data, next_cursor}`` envelope.
+
+        Raises:
+            InvalidCursorError: If ``cursor`` is malformed or sort-mismatched.
+        """
+        return await self._list_cards_page(
+            category_id=None,
+            lang=lang,
+            sort=sort,
+            cursor=cursor,
+            price_min=price_min,
+            price_max=price_max,
+            value_ids=None,
+            on_sale=on_sale,
+            page_size=page_size,
+        )
+
+    async def _list_cards_page(
+        self,
+        category_id: int | None,
+        lang: str,
+        sort: str,
+        cursor: str | None,
+        price_min: Decimal | None,
+        price_max: Decimal | None,
+        value_ids: list[int] | None,
+        on_sale: bool = False,
+        page_size: int = DEFAULT_PAGE_SIZE,
+    ) -> ProductListing:
+        """Shared keyset-pagination core over ``product_card`` (§5.3).
+
+        Args:
+            category_id: Subtree to list, or ``None`` for the whole store.
+            lang: Requested language code.
+            sort: Sort key.
+            cursor: Opaque cursor (``None`` = first page).
+            price_min: Optional inclusive lower price bound.
+            price_max: Optional inclusive upper price bound.
+            value_ids: Optional facet selection (category listings only).
+            on_sale: Keep only products with an ``old_price``.
+            page_size: Requested page size (clamped to ``MAX_PAGE_SIZE``).
+
+        Returns:
+            ProductListing: ``{data, next_cursor}`` envelope.
+
+        Raises:
+            InvalidCursorError: If ``cursor`` is malformed or sort-mismatched.
+        """
         limit = max(1, min(page_size, MAX_PAGE_SIZE))
         keyset_predicate = None
         if cursor is not None:
@@ -274,7 +358,7 @@ class CatalogService:
 
         order_columns = self.repo.order_columns_for(sort)
         cards = await self.repo.list_cards(
-            category_id=category.id,
+            category_id=category_id,
             lang=lang,
             order_columns=order_columns,
             keyset_predicate=keyset_predicate,
@@ -282,6 +366,7 @@ class CatalogService:
             price_min=price_min,
             price_max=price_max,
             value_ids=value_ids,
+            on_sale=on_sale,
         )
 
         has_more = len(cards) > limit
