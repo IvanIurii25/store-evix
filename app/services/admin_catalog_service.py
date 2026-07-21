@@ -9,12 +9,13 @@ one place (§10). No HTTP knowledge: the router maps the raised exceptions.
 """
 
 from fastapi import UploadFile
-from sqlalchemy import BigInteger, cast, delete, func, or_, select
+from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.storage import get_storage
 from app.models.catalog import (
+    ALLOWED_LANGS,
     ALLOWED_MEDIA_KINDS,
     Attribute,
     AttributeTranslation,
@@ -762,41 +763,63 @@ class AdminCatalogService:
                 strictly greater than ``price`` (the "Акции" list, §4.2).
 
         Returns:
-            list[tuple[Product, str | None]]: ``(product, matched_name)`` rows.
+            list[tuple[Product, str | None]]: ``(product, display_name)`` rows,
+            where ``display_name`` is the default-language (``ALLOWED_LANGS[0]``)
+            translation name — one row per product.
         """
-        stmt = (
-            select(Product, ProductTranslation.name)
+        # Step 1 — select the DISTINCT product ids to return. The outer-join to
+        # ProductTranslation keeps name-search matching across *either* language,
+        # while ``.distinct()`` before ``.limit(limit)`` makes the cap bound the
+        # number of distinct products (not the joined rows) — otherwise a two-row
+        # (ru + ro) join would halve the page (§4.2 back-office list).
+        id_stmt = (
+            select(Product.id)
             .outerjoin(
                 ProductTranslation,
                 ProductTranslation.product_id == Product.id,
             )
+            .distinct()
             .order_by(Product.id.desc())
             .limit(limit)
         )
         if search:
             term = f"%{search.strip()}%"
-            stmt = stmt.where(
+            id_stmt = id_stmt.where(
                 or_(
                     Product.code.ilike(term),
                     ProductTranslation.name.ilike(term),
                 )
             )
         if is_active is not None:
-            stmt = stmt.where(Product.is_active.is_(is_active))
+            id_stmt = id_stmt.where(Product.is_active.is_(is_active))
         if low_stock:
-            stmt = stmt.where(Product.qty <= LOW_STOCK_THRESHOLD)
+            id_stmt = id_stmt.where(Product.qty <= LOW_STOCK_THRESHOLD)
         if on_sale:
-            stmt = stmt.where(
+            id_stmt = id_stmt.where(
                 Product.old_price.is_not(None),
                 Product.old_price > Product.price,
             )
-        rows = (await self.session.execute(stmt)).all()
-        # Deduplicate on product id (outer join may yield two translation rows).
-        seen: dict[int, tuple[Product, str | None]] = {}
-        for product, name in rows:
-            if product.id not in seen:
-                seen[product.id] = (product, name)
-        return list(seen.values())
+        product_ids = list((await self.session.execute(id_stmt)).scalars().all())
+        if not product_ids:
+            return []
+
+        # Step 2 — load those products for display, joined to the default-language
+        # translation name only, so each product yields exactly one row.
+        display_lang = ALLOWED_LANGS[0]
+        rows_stmt = (
+            select(Product, ProductTranslation.name)
+            .outerjoin(
+                ProductTranslation,
+                and_(
+                    ProductTranslation.product_id == Product.id,
+                    ProductTranslation.lang == display_lang,
+                ),
+            )
+            .where(Product.id.in_(product_ids))
+            .order_by(Product.id.desc())
+        )
+        rows = (await self.session.execute(rows_stmt)).all()
+        return [(product, name) for product, name in rows]
 
     async def get_product_translations(
         self,

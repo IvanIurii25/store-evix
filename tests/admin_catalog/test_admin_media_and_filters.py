@@ -231,6 +231,45 @@ async def test_list_categories_includes_inactive(client: AsyncClient) -> None:
     assert {tr["lang"] for tr in row["translations"]} == {"ru", "ro"}
 
 
+async def test_limit_counts_distinct_products_not_join_rows(
+    client: AsyncClient,
+) -> None:
+    """``limit`` bounds distinct products, not the (ru+ro) joined rows.
+
+    Regression for the P1 where the outer-join to ProductTranslation produced two
+    rows per product, so ``.limit(limit)`` capped the joined rows and dedup then
+    yielded only ceil(limit/2) products (limit=4 → 2). Each product below has both
+    a ``ru`` and a ``ro`` translation.
+    """
+    category_id = await _make_category(client)
+    for index in range(6):
+        await _make_product(client, category_id, f"LIMIT-{index}")
+
+    resp = await client.get("/api/v1/admin/products", params={"limit": 4})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert len(data) == 4
+    # One row per product (no duplicated ids from the two-language join).
+    assert len({item["id"] for item in data}) == 4
+
+
+async def test_search_by_code_and_by_name(client: AsyncClient) -> None:
+    """Search still matches ``code`` and a translation ``name`` in either lang."""
+    category_id = await _make_category(client)
+    target = await _make_product(client, category_id, "FIND-ME")
+    await _make_product(client, category_id, "OTHER-1")
+
+    # By product code.
+    resp = await client.get("/api/v1/admin/products", params={"search": "FIND-ME"})
+    assert resp.status_code == 200, resp.text
+    assert {item["id"] for item in resp.json()["data"]} == {target}
+
+    # By translation name — helpers create names "<code-lower>-ru" / "-ro".
+    resp = await client.get("/api/v1/admin/products", params={"search": "find-me-ro"})
+    assert resp.status_code == 200, resp.text
+    assert {item["id"] for item in resp.json()["data"]} == {target}
+
+
 async def test_filter_is_active(client: AsyncClient) -> None:
     """``is_active=false`` returns only inactive products."""
     category_id = await _make_category(client)
