@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.catalog import Product
 from app.services.catalog_service import CatalogService, InvalidCursorError
 
 
@@ -299,6 +300,23 @@ async def test_list_all_products_cursor_paginates(seed):
     )
     assert [c.product_id for c in second.data] == [101]
     assert second.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_list_all_products_featured_filter(seed):
+    """featured keeps only manually-curated (is_featured) cards."""
+    await seed["build_tree"]()
+    await _seed_products(seed, 3)  # products 101, 102, 103 in category 2
+    session = seed["session"]
+    service: CatalogService = seed["service"]
+
+    product = await session.get(Product, 102)
+    product.is_featured = True
+    await session.flush()
+    await service.rebuild_card(102)
+
+    page = await service.list_all_products("ro", featured=True, page_size=50)
+    assert {c.product_id for c in page.data} == {102}
 
 
 @pytest.mark.asyncio

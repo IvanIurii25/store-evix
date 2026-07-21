@@ -128,6 +128,7 @@ async def _build_product_out(
         old_price=product.old_price,
         qty=product.qty,
         is_active=product.is_active,
+        is_featured=product.is_featured,
         translations=[ProductTranslationOut.model_validate(tr) for tr in translations],
         media=[MediaAdminOut.model_validate(item) for item in media],
         value_ids=value_ids,

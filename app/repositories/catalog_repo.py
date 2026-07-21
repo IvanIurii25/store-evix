@@ -171,12 +171,13 @@ class CatalogRepository:
         price_max: Decimal | None,
         value_ids: list[int] | None = None,
         on_sale: bool = False,
+        featured: bool = False,
     ) -> Select:
         """Attach category-subtree, language, active, price and facet filters.
 
         ``category_id`` is optional: ``None`` lists across the whole store
         (homepage rails). ``on_sale`` keeps only cards with a struck-through
-        ``old_price``.
+        ``old_price``; ``featured`` keeps only manually-curated cards.
         """
         stmt = stmt.where(
             ProductCard.lang == lang,
@@ -187,6 +188,8 @@ class CatalogRepository:
             stmt = stmt.where(ProductCard.path.any(category_id))
         if on_sale:
             stmt = stmt.where(ProductCard.old_price.is_not(None))
+        if featured:
+            stmt = stmt.where(ProductCard.is_featured.is_(True))
         if price_min is not None:
             stmt = stmt.where(ProductCard.price >= price_min)
         if price_max is not None:
@@ -233,6 +236,7 @@ class CatalogRepository:
         price_max: Decimal | None = None,
         value_ids: list[int] | None = None,
         on_sale: bool = False,
+        featured: bool = False,
     ) -> list[ProductCard]:
         """Fetch one keyset page of listing cards from ``product_card``.
 
@@ -251,7 +255,7 @@ class CatalogRepository:
         """
         stmt = select(ProductCard)
         stmt = self._apply_listing_filters(
-            stmt, category_id, lang, price_min, price_max, value_ids, on_sale
+            stmt, category_id, lang, price_min, price_max, value_ids, on_sale, featured
         )
         if keyset_predicate is not None:
             stmt = stmt.where(keyset_predicate)

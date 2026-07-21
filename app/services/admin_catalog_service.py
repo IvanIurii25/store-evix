@@ -420,6 +420,7 @@ class AdminCatalogService:
             old_price=payload.old_price,
             qty=payload.qty,
             is_active=payload.is_active,
+            is_featured=payload.is_featured,
         )
         self.session.add(product)
         await self.session.flush()

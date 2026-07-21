@@ -284,6 +284,7 @@ class ProductCreate(BaseModel):
     old_price: Decimal | None = Field(default=None, ge=0)
     qty: int = Field(default=0, ge=0)
     is_active: bool = False
+    is_featured: bool = False
     translations: list[ProductTranslationIn] = Field(default_factory=list)
 
 
@@ -300,6 +301,7 @@ class ProductUpdate(BaseModel):
     old_price: Decimal | None = Field(default=None, ge=0)
     qty: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
+    is_featured: bool | None = None
 
 
 class ProductTranslationOut(BaseModel):
@@ -355,6 +357,7 @@ class ProductOut(BaseModel):
     old_price: Decimal | None = None
     qty: int
     is_active: bool
+    is_featured: bool = False
     translations: list[ProductTranslationOut] = Field(default_factory=list)
     media: list[MediaAdminOut] = Field(default_factory=list)
     value_ids: list[int] = Field(default_factory=list)

@@ -286,12 +286,13 @@ class CatalogService:
         price_min: Decimal | None = None,
         price_max: Decimal | None = None,
         on_sale: bool = False,
+        featured: bool = False,
         page_size: int = DEFAULT_PAGE_SIZE,
     ) -> ProductListing:
         """List products across the whole store, keyset-paginated (homepage rails).
 
         Same read-model + cursor as :meth:`list_products` but without a category
-        constraint. Powers the store-wide "newest" and "on sale" rails.
+        constraint. Powers the store-wide "newest", "on sale" and "featured" rails.
 
         Args:
             lang: Requested language code.
@@ -300,6 +301,7 @@ class CatalogService:
             price_min: Optional inclusive lower price bound.
             price_max: Optional inclusive upper price bound.
             on_sale: Keep only products with a struck-through ``old_price``.
+            featured: Keep only manually-curated (featured) products.
             page_size: Requested page size (clamped to ``MAX_PAGE_SIZE``).
 
         Returns:
@@ -317,6 +319,7 @@ class CatalogService:
             price_max=price_max,
             value_ids=None,
             on_sale=on_sale,
+            featured=featured,
             page_size=page_size,
         )
 
@@ -330,6 +333,7 @@ class CatalogService:
         price_max: Decimal | None,
         value_ids: list[int] | None,
         on_sale: bool = False,
+        featured: bool = False,
         page_size: int = DEFAULT_PAGE_SIZE,
     ) -> ProductListing:
         """Shared keyset-pagination core over ``product_card`` (§5.3).
@@ -343,6 +347,7 @@ class CatalogService:
             price_max: Optional inclusive upper price bound.
             value_ids: Optional facet selection (category listings only).
             on_sale: Keep only products with an ``old_price``.
+            featured: Keep only manually-curated (featured) products.
             page_size: Requested page size (clamped to ``MAX_PAGE_SIZE``).
 
         Returns:
@@ -368,6 +373,7 @@ class CatalogService:
             price_max=price_max,
             value_ids=value_ids,
             on_sale=on_sale,
+            featured=featured,
         )
 
         has_more = len(cards) > limit
@@ -560,6 +566,7 @@ class CatalogService:
                 badge=badge,
                 path=list(path),
                 is_active=product.is_active,
+                is_featured=product.is_featured,
             )
             await self.repo.upsert_card(card)
             written += 1

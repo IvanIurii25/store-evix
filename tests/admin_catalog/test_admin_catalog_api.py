@@ -265,6 +265,59 @@ async def test_create_active_product_directly(client: AsyncClient) -> None:
     assert response.json()["is_active"] is True
 
 
+async def test_product_is_featured_projects_to_card(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """is_featured round-trips in the admin view and projects onto the card."""
+    category_id = await _make_category(client)
+    created = await client.post(
+        "/api/v1/admin/products",
+        json={
+            "category_id": category_id,
+            "code": "SKU-FEAT",
+            "price": "40.00",
+            "qty": 2,
+            "is_active": True,
+            "is_featured": True,
+            "translations": _product_translations("feat", ("ru", "ro")),
+        },
+    )
+    assert created.status_code == 201, created.text
+    product_id = created.json()["id"]
+    assert created.json()["is_featured"] is True
+
+    cards = (
+        (
+            await db_session.execute(
+                select(ProductCard).where(ProductCard.product_id == product_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert cards and all(card.is_featured for card in cards)
+
+    # Un-feature → the card read-model is rebuilt with is_featured False.
+    patched = await client.patch(
+        f"/api/v1/admin/products/{product_id}", json={"is_featured": False}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["is_featured"] is False
+
+    db_session.expire_all()
+    refreshed = (
+        (
+            await db_session.execute(
+                select(ProductCard).where(ProductCard.product_id == product_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert refreshed and not any(card.is_featured for card in refreshed)
+
+
 async def test_search_products_by_code_and_name(client: AsyncClient) -> None:
     """Back-office search matches on ``code`` and on translated name."""
     category_id = await _make_category(client)

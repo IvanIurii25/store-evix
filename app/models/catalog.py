@@ -108,6 +108,8 @@ class Product(Base, TimestampMixin):
     old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Manual curation flag for the storefront "featured" rail (homepage).
+    is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class ProductTranslation(Base):
@@ -264,3 +266,5 @@ class ProductCard(Base):
     badge: Mapped[str | None] = mapped_column(String, nullable=True)
     path: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # Projected from Product.is_featured — powers the storefront "featured" rail.
+    is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
