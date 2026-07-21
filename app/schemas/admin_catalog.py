@@ -380,3 +380,9 @@ class ProductSearchResult(BaseModel):
     """Envelope for a back-office product search response."""
 
     data: list[ProductSearchItem] = Field(default_factory=list)
+
+
+class AssetOut(BaseModel):
+    """Public URL of a stored asset (no DB row) — see ``POST /admin/assets``."""
+
+    url: str

@@ -14,9 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
 from app.core.db import get_session
+from app.core.storage import get_storage
 from app.models.catalog import Attribute, Category, Product
 from app.models.user import AppUser
 from app.schemas.admin_catalog import (
+    AssetOut,
     AttributeCreate,
     AttributeOut,
     AttributeTranslationOut,
@@ -432,6 +434,33 @@ async def upload_product_media(
     except (AdminNotFoundError, AdminValidationError) as exc:
         _raise_http(exc)
     return MediaAdminOut.model_validate(media)
+
+
+@router.post("/assets", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
+async def upload_asset(
+    _staff: AppUser = Depends(current_staff),
+    file: UploadFile = File(...),
+) -> AssetOut:
+    """Store an uploaded image asset and return its public URL — no DB row.
+
+    For inline content that needs a stable public URL but is not product gallery
+    media (e.g. rehosted description-image banners). Uses the same storage
+    backend (local dir or S3/MinIO) as product media.
+    """
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only image uploads are allowed",
+        )
+    await file.seek(0)
+    data = await file.read()
+    storage = get_storage()
+    url = await storage.save(
+        data,
+        filename=file.filename or "",
+        content_type=file.content_type or "application/octet-stream",
+    )
+    return AssetOut(url=url)
 
 
 @router.put(
