@@ -7,19 +7,58 @@ stored; only the derived class is (privacy minimization, spec §5).
 """
 
 # Substrings that mark automated / crawler traffic (lower-cased match).
+#
+# Grouped for maintainability; order is irrelevant (any match ⇒ bot). Generic
+# tokens ("bot", "spider", "crawler") already catch most named crawlers
+# (Googlebot, Bingbot, AhrefsBot, TwitterBot, …); the explicit vendor entries
+# below cover monitors, HTTP libraries and preview fetchers whose UA carries no
+# generic marker. Bare vendor names that also appear in real browser UAs
+# (notably "yandex" — Yandex Browser) are deliberately NOT listed to avoid
+# flagging humans; those crawlers are caught by "bot"/"spider" instead.
 _BOT_MARKERS: tuple[str, ...] = (
+    # Generic automation / crawler tokens.
     "bot",
     "crawler",
     "spider",
     "slurp",
     "crawling",
+    "headless",
+    "preview",
+    "scrapy",
+    # Command-line / HTTP client libraries (scripted traffic).
     "curl",
     "wget",
     "python-requests",
     "httpx",
-    "headless",
+    "aiohttp",
+    "urllib",
+    "go-http-client",
+    "okhttp",
+    "java/",
+    "libwww",
+    "guzzle",
+    "axios",
+    "node-fetch",
+    "postman",
+    "insomnia",
+    # Uptime / performance monitors (some carry no "bot"/"monitor" token).
     "monitor",
-    "preview",
+    "pingdom",
+    "statuscake",
+    "site24x7",
+    "datadog",
+    "newrelic",
+    "checkly",
+    "hetrix",
+    "gtmetrix",
+    "lighthouse",
+    "phantomjs",
+    # Social / link-preview fetchers.
+    "facebookexternalhit",
+    "whatsapp",
+    "embedly",
+    "vkshare",
+    "pinterest",
 )
 
 # Substrings marking tablets (checked before phones — an iPad also matches none
