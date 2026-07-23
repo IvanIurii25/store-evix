@@ -21,6 +21,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.cart import Cart, CartItem
 from app.models.catalog import Product, ProductTranslation
@@ -85,28 +86,34 @@ class OrderRepository:
     async def list_cart_lines(
         self,
         cart_id: int,
+        lang: str,
     ) -> list[tuple[CartItem, Product, str | None]]:
-        """Return cart lines joined to product + fallback name (single query).
+        """Return cart lines joined to product + localized name (single query).
 
-        The inner join to ``product`` drops lines whose product row is gone; the
-        left join to the fallback-language name lets a line snapshot a name even
-        when that translation is missing (falls back to ``code`` in the service).
+        The inner join to ``product`` drops lines whose product row is gone. The
+        snapshot name is resolved language-aware via two LEFT joins to
+        ``product_translation`` — the requested ``lang`` and the default
+        :data:`NAME_LANG` — coalesced so the value is
+        ``requested-lang → default-lang → None`` (the service then falls back to
+        ``product.code`` when ``None``). This is what the order's
+        ``name_snapshot`` captures, so the snapshot is in the order's language.
+        When ``lang == NAME_LANG`` the two joins are harmless.
 
         Args:
             cart_id: Cart id.
+            lang: Requested snapshot language (validated by the caller).
 
         Returns:
             list[tuple[CartItem, Product, str | None]]: ``(line, product, name)``
                 triples ordered by ``product_id`` for a stable response.
         """
+        req = aliased(ProductTranslation)
+        dft = aliased(ProductTranslation)
         stmt = (
-            select(CartItem, Product, ProductTranslation.name)
+            select(CartItem, Product, func.coalesce(req.name, dft.name))
             .join(Product, Product.id == CartItem.product_id)
-            .outerjoin(
-                ProductTranslation,
-                (ProductTranslation.product_id == Product.id)
-                & (ProductTranslation.lang == NAME_LANG),
-            )
+            .outerjoin(req, (req.product_id == Product.id) & (req.lang == lang))
+            .outerjoin(dft, (dft.product_id == Product.id) & (dft.lang == NAME_LANG))
             .where(CartItem.cart_id == cart_id)
             .order_by(CartItem.product_id)
         )

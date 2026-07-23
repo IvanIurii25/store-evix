@@ -14,7 +14,7 @@ Mounted without the ``/api/v1`` prefix — the integrator adds it.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +81,7 @@ async def quote(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> QuoteOut:
     """Return the checkout totals without creating an order (§9, idempotent).
 
@@ -89,6 +90,7 @@ async def quote(
         request: Incoming request (guest cookie).
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
+        lang: Requested line-name language (default ``ro``; mirrors checkout).
 
     Returns:
         QuoteOut: The subtotal / discount / delivery / total breakdown.
@@ -105,6 +107,7 @@ async def quote(
             delivery_type=data.delivery_type,
             delivery_address_id=data.delivery_address_id,
             delivery_address=data.delivery_address,
+            lang=lang,
         )
     except EmptyCartError as exc:
         raise HTTPException(
@@ -128,6 +131,7 @@ async def checkout(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Snapshot language (ru|ro)."),
 ) -> OrderOut | JSONResponse:
     """Create a COD order from the caller's cart atomically (§9.6).
 
@@ -136,6 +140,8 @@ async def checkout(
         request: Incoming request (guest cookie).
         user: The authenticated user, or ``None`` for a guest order.
         session: Injected async DB session.
+        lang: Language captured into each line's ``name_snapshot`` (default
+            ``ro``; unsupported values fall back to the default).
 
     Returns:
         OrderOut | JSONResponse: The created order, or a 409 ``out_of_stock``
@@ -155,6 +161,7 @@ async def checkout(
             delivery_type=data.delivery_type,
             delivery_address_id=data.delivery_address_id,
             delivery_address=data.delivery_address,
+            lang=lang,
         )
     except EmptyCartError as exc:
         raise HTTPException(

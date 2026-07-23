@@ -167,6 +167,73 @@ async def test_guest_lookup_wrong_email_is_404(
     assert resp.status_code == 404, resp.text
 
 
+async def _add_ru_translation(
+    db_session: AsyncSession,
+    product_id: int,
+    *,
+    name: str,
+) -> None:
+    """Add a ``ru`` translation for a product (``add_product`` seeds only ``ro``)."""
+    db_session.add(
+        ProductTranslation(
+            product_id=product_id,
+            lang="ru",
+            name=name,
+            slug=f"slug-ru-{product_id}",
+        )
+    )
+    await db_session.flush()
+
+
+async def test_order_snapshot_uses_requested_language(
+    client: AsyncClient,
+    add_product,
+    db_session: AsyncSession,
+) -> None:
+    """Checkout with ``?lang=ru`` snapshots the RU line name; ``ro`` snapshots RO."""
+    await _seed_guest_cart(
+        client, add_product, product_id=1, price=Decimal("100.00"), qty=1, name="Produs RO"
+    )
+    await _add_ru_translation(db_session, 1, name="Товар RU")
+
+    ru_order = await client.post(
+        "/api/v1/checkout",
+        params={"lang": "ru"},
+        json={
+            "email": "ru@example.com",
+            "phone": "+37360000010",
+            "delivery_type": "pickup",
+        },
+    )
+
+    assert ru_order.status_code == 201, ru_order.text
+    assert ru_order.json()["items"][0]["name_snapshot"] == "Товар RU"
+
+
+async def test_order_snapshot_defaults_to_ro(
+    client: AsyncClient,
+    add_product,
+    db_session: AsyncSession,
+) -> None:
+    """Checkout without ``?lang=`` snapshots the default (RO) line name (§2.6)."""
+    await _seed_guest_cart(
+        client, add_product, product_id=1, price=Decimal("100.00"), qty=1, name="Produs RO"
+    )
+    await _add_ru_translation(db_session, 1, name="Товар RU")
+
+    ro_order = await client.post(
+        "/api/v1/checkout",
+        json={
+            "email": "ro@example.com",
+            "phone": "+37360000011",
+            "delivery_type": "pickup",
+        },
+    )
+
+    assert ro_order.status_code == 201, ro_order.text
+    assert ro_order.json()["items"][0]["name_snapshot"] == "Produs RO"
+
+
 async def test_snapshot_immutable_after_price_and_name_change(
     client: AsyncClient,
     add_product,

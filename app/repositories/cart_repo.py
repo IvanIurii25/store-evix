@@ -13,8 +13,9 @@ increments ``qty`` on the existing row rather than inserting a duplicate.
 
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.cart import Cart, CartItem
 from app.models.catalog import Product, ProductTranslation
@@ -189,30 +190,38 @@ class CartRepository:
     async def list_items(
         self,
         cart_id: int,
+        lang: str,
     ) -> list[tuple[CartItem, Product, str | None]]:
         """Return every line of a cart joined to its product (single query).
 
         The join carries the live price / active flag plus the localized display
         name so the service can compute totals and skip removed or deactivated
         products without an N+1 (§2.3). An INNER JOIN on ``product`` drops lines
-        whose product row is gone entirely; the name join is LEFT (a product may
-        lack the fallback-language translation) so the line still renders.
+        whose product row is gone entirely.
+
+        The display name is resolved language-aware via two LEFT joins to
+        ``product_translation`` — the requested ``lang`` and the default
+        :data:`NAME_LANG` — coalesced so the returned name is
+        ``requested-lang → default-lang → None``. A product missing the requested
+        translation still renders (the service then falls back to ``product.code``
+        when the name is ``None``). When ``lang == NAME_LANG`` the two joins are
+        harmless (the coalesce returns the same value).
 
         Args:
             cart_id: Cart id.
+            lang: Requested display language (validated by the caller).
 
         Returns:
             list[tuple[CartItem, Product, str | None]]: ``(line, product, name)``
                 triples ordered by ``product_id`` for a stable response.
         """
+        req = aliased(ProductTranslation)
+        dft = aliased(ProductTranslation)
         stmt = (
-            select(CartItem, Product, ProductTranslation.name)
+            select(CartItem, Product, func.coalesce(req.name, dft.name))
             .join(Product, Product.id == CartItem.product_id)
-            .outerjoin(
-                ProductTranslation,
-                (ProductTranslation.product_id == Product.id)
-                & (ProductTranslation.lang == NAME_LANG),
-            )
+            .outerjoin(req, (req.product_id == Product.id) & (req.lang == lang))
+            .outerjoin(dft, (dft.product_id == Product.id) & (dft.lang == NAME_LANG))
             .where(CartItem.cart_id == cart_id)
             .order_by(CartItem.product_id)
         )

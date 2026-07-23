@@ -18,9 +18,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.lang import normalize_lang
 from app.models.cart import Cart
 from app.models.catalog import Product
-from app.repositories.cart_repo import CartRepository
+from app.repositories.cart_repo import NAME_LANG, CartRepository
 from app.schemas.cart import CartItemOut, CartOut
 
 
@@ -99,6 +100,7 @@ class CartService:
         self,
         user_id: int | None,
         session_token: UUID | None,
+        lang: str = NAME_LANG,
     ) -> CartOut:
         """Return the cart with prices/totals recomputed from ``product.price``.
 
@@ -110,6 +112,8 @@ class CartService:
             user_id: Owning user id, or ``None`` for a guest.
             session_token: Guest cookie token, or ``None`` for a guest with no
                 cart yet.
+            lang: Requested display language; normalized to a supported code
+                (unsupported / ``None`` fall back to :data:`NAME_LANG`).
 
         Returns:
             CartOut: Live-priced lines plus subtotal and item count (empty when
@@ -118,18 +122,20 @@ class CartService:
         cart = await self._get_cart(user_id, session_token)
         if cart is None:
             return CartOut(items=[], subtotal=Decimal("0"), item_count=0)
-        return await self._render(cart.id)
+        return await self._render(cart.id, lang)
 
-    async def _render(self, cart_id: int) -> CartOut:
+    async def _render(self, cart_id: int, lang: str = NAME_LANG) -> CartOut:
         """Build a :class:`CartOut` from live product data for a cart.
 
         Args:
             cart_id: Cart id to render.
+            lang: Requested display language; normalized to a supported code
+                before querying the localized name.
 
         Returns:
             CartOut: The recomputed cart projection.
         """
-        rows = await self.repo.list_items(cart_id)
+        rows = await self.repo.list_items(cart_id, normalize_lang(lang))
         items: list[CartItemOut] = []
         subtotal = Decimal("0")
         item_count = 0
@@ -159,6 +165,7 @@ class CartService:
         session_token: UUID | None,
         product_id: int,
         qty: int,
+        lang: str = NAME_LANG,
     ) -> CartOut:
         """Add a product to the cart, or increment its ``qty`` if already present.
 
@@ -167,6 +174,7 @@ class CartService:
             session_token: Guest cookie token (required for a guest).
             product_id: Catalog product id to add.
             qty: Quantity to add.
+            lang: Requested display language for the re-rendered cart.
 
         Returns:
             CartOut: The re-rendered cart.
@@ -177,7 +185,7 @@ class CartService:
         product = await self._require_active_product(product_id)
         cart = await self._get_or_create_cart(user_id, session_token)
         await self.repo.add_or_increment_item(cart.id, product.id, qty)
-        rendered = await self._render(cart.id)
+        rendered = await self._render(cart.id, lang)
         await self.session.commit()
         return rendered
 
@@ -187,6 +195,7 @@ class CartService:
         session_token: UUID | None,
         product_id: int,
         qty: int,
+        lang: str = NAME_LANG,
     ) -> CartOut:
         """Set an absolute quantity on an existing cart line.
 
@@ -195,6 +204,7 @@ class CartService:
             session_token: Guest cookie token.
             product_id: Catalog product id whose line is being changed.
             qty: New absolute quantity.
+            lang: Requested display language for the re-rendered cart.
 
         Returns:
             CartOut: The re-rendered cart.
@@ -208,7 +218,7 @@ class CartService:
         updated = await self.repo.set_item_qty(cart.id, product_id, qty)
         if updated is None:
             raise ItemNotFoundError("Item not in cart")
-        rendered = await self._render(cart.id)
+        rendered = await self._render(cart.id, lang)
         await self.session.commit()
         return rendered
 
@@ -217,6 +227,7 @@ class CartService:
         user_id: int | None,
         session_token: UUID | None,
         product_id: int,
+        lang: str = NAME_LANG,
     ) -> CartOut:
         """Remove a line from the cart.
 
@@ -224,6 +235,7 @@ class CartService:
             user_id: Owning user id, or ``None`` for a guest.
             session_token: Guest cookie token.
             product_id: Catalog product id whose line is removed.
+            lang: Requested display language for the re-rendered cart.
 
         Returns:
             CartOut: The re-rendered cart.
@@ -237,7 +249,7 @@ class CartService:
         removed = await self.repo.delete_item(cart.id, product_id)
         if not removed:
             raise ItemNotFoundError("Item not in cart")
-        rendered = await self._render(cart.id)
+        rendered = await self._render(cart.id, lang)
         await self.session.commit()
         return rendered
 
@@ -248,6 +260,7 @@ class CartService:
         self,
         user_id: int,
         session_token: UUID,
+        lang: str = NAME_LANG,
     ) -> CartOut:
         """Merge a guest cart (by ``session_token``) into the user's cart (§7).
 
@@ -259,6 +272,7 @@ class CartService:
         Args:
             user_id: The now-authenticated user's id.
             session_token: The guest cookie token to merge from.
+            lang: Requested display language for the re-rendered cart.
 
         Returns:
             CartOut: The re-rendered user cart.
@@ -266,7 +280,7 @@ class CartService:
         guest_cart = await self.repo.get_cart_by_session_token(session_token)
         user_cart = await self._get_or_create_cart(user_id, None)
         if guest_cart is None or guest_cart.id == user_cart.id:
-            rendered = await self._render(user_cart.id)
+            rendered = await self._render(user_cart.id, lang)
             await self.session.commit()
             return rendered
 
@@ -279,7 +293,7 @@ class CartService:
                 await self.repo.move_item_to_cart(guest_line, user_cart.id)
         await self.repo.delete_cart(guest_cart.id)
 
-        rendered = await self._render(user_cart.id)
+        rendered = await self._render(user_cart.id, lang)
         await self.session.commit()
         return rendered
 

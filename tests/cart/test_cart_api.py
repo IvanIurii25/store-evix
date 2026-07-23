@@ -1,8 +1,9 @@
 """API tests for the cart domain (B5 DoD).
 
 Covers: guest add (cart without user), repeat-adds increment (no duplicate row),
-live totals from ``product.price``, guest→user merge (qty summed), and a
-deactivated/removed product not breaking ``GET /cart``.
+live totals from ``product.price``, guest→user merge (qty summed), a
+deactivated/removed product not breaking ``GET /cart``, and language-aware line
+names with a default-language fallback (``?lang=``).
 """
 
 from decimal import Decimal
@@ -14,8 +15,27 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cart import Cart, CartItem
+from app.models.catalog import ProductTranslation
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _add_ru_translation(
+    db_session: AsyncSession,
+    product_id: int,
+    *,
+    name: str,
+) -> None:
+    """Add a ``ru`` translation for an existing product (``add_product`` seeds ``ro``)."""
+    db_session.add(
+        ProductTranslation(
+            product_id=product_id,
+            lang="ru",
+            name=name,
+            slug=f"slug-ru-{product_id}",
+        )
+    )
+    await db_session.flush()
 
 
 async def test_guest_add_creates_userless_cart(
@@ -161,3 +181,44 @@ async def test_add_inactive_product_rejected(
 
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "http_error"
+
+
+async def test_cart_name_is_language_aware(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    add_product,
+) -> None:
+    """``GET /cart`` returns the RU name for ``?lang=ru`` and RO otherwise."""
+    await add_product(1, price=Decimal("10.00"), code="P1", name="Produs RO")
+    await _add_ru_translation(db_session, 1, name="Товар RU")
+
+    first = await client.post("/api/v1/cart/items", json={"product_id": 1, "qty": 1})
+    client.cookies.set("session_token", first.cookies["session_token"])
+
+    ru = await client.get("/api/v1/cart", params={"lang": "ru"})
+    ro = await client.get("/api/v1/cart", params={"lang": "ro"})
+    default = await client.get("/api/v1/cart")
+
+    assert ru.json()["items"][0]["name"] == "Товар RU"
+    assert ro.json()["items"][0]["name"] == "Produs RO"
+    # No ?lang= defaults to ro (§2.6).
+    assert default.json()["items"][0]["name"] == "Produs RO"
+
+
+async def test_cart_name_falls_back_to_default_lang(
+    client: AsyncClient,
+    add_product,
+) -> None:
+    """A product lacking the requested lang falls back to the RO name, not the code."""
+    # ``add_product`` seeds only the ``ro`` translation; no ``ru`` row exists.
+    await add_product(1, price=Decimal("10.00"), code="P1", name="Produs RO")
+
+    first = await client.post("/api/v1/cart/items", json={"product_id": 1, "qty": 1})
+    client.cookies.set("session_token", first.cookies["session_token"])
+
+    resp = await client.get("/api/v1/cart", params={"lang": "ru"})
+
+    # Coalesce: requested ru missing -> default ro name (never the bare code).
+    name = resp.json()["items"][0]["name"]
+    assert name == "Produs RO"
+    assert name != "P1"

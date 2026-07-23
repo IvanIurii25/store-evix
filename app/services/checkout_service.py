@@ -19,11 +19,12 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.lang import normalize_lang
 from app.core.config import settings
 from app.core.email import send_order_confirmation
 from app.models.cart import Cart
 from app.models.order import Order, OrderItem
-from app.repositories.order_repo import OrderRepository
+from app.repositories.order_repo import NAME_LANG, OrderRepository
 from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class CheckoutService:
         delivery_type: str,
         delivery_address_id: int | None,
         delivery_address: DeliveryAddressIn | None = None,
+        lang: str = NAME_LANG,
     ) -> QuoteOut:
         """Compute the checkout totals without creating an order (§9, idempotent).
 
@@ -109,6 +111,8 @@ class CheckoutService:
             delivery_type: ``pickup`` or ``courier``.
             delivery_address_id: Saved address id (courier; logged-in users).
             delivery_address: Inline courier address (guest or user).
+            lang: Requested line-name language (does not affect totals; kept
+                consistent with checkout so the quote mirrors the order).
 
         Returns:
             QuoteOut: The subtotal / discount / delivery / total breakdown.
@@ -117,7 +121,7 @@ class CheckoutService:
             EmptyCartError: If the caller has no purchasable lines.
             DeliveryAddressRequiredError: If courier is chosen without an address.
         """
-        _cart, lines = await self._load_cart_lines(user_id, session_token)
+        _cart, lines = await self._load_cart_lines(user_id, session_token, lang)
         return self._quote_from_lines(
             lines, delivery_type, delivery_address_id, delivery_address
         )
@@ -135,6 +139,7 @@ class CheckoutService:
         delivery_type: str,
         delivery_address_id: int | None,
         delivery_address: DeliveryAddressIn | None = None,
+        lang: str = NAME_LANG,
     ) -> OrderOut:
         """Create an order from the caller's cart in one transaction (§9.6).
 
@@ -151,6 +156,8 @@ class CheckoutService:
             phone: Contact phone (required, incl. guests).
             delivery_type: ``pickup`` or ``courier``.
             delivery_address_id: Address id (required for courier).
+            lang: Requested language captured into each line's ``name_snapshot``
+                (unsupported / ``None`` fall back to :data:`NAME_LANG`).
 
         Returns:
             OrderOut: The created order with its lines.
@@ -160,7 +167,7 @@ class CheckoutService:
             DeliveryAddressRequiredError: If courier is chosen without an address.
             OutOfStockError: If any line's stock is insufficient at commit time.
         """
-        cart, lines = await self._load_cart_lines(user_id, session_token)
+        cart, lines = await self._load_cart_lines(user_id, session_token, lang)
         totals = self._quote_from_lines(
             lines, delivery_type, delivery_address_id, delivery_address
         )
@@ -230,12 +237,15 @@ class CheckoutService:
         self,
         user_id: int | None,
         session_token: UUID | None,
+        lang: str = NAME_LANG,
     ) -> tuple[Cart, list[_PricedLine]]:
         """Load the caller's cart and its purchasable, stock-checked lines (§9.1).
 
         Args:
             user_id: Owning user id, or ``None`` for a guest.
             session_token: Guest cookie token, or ``None`` for a user.
+            lang: Requested line-name language; normalized to a supported code
+                before querying the localized name.
 
         Returns:
             tuple[Cart, list[_PricedLine]]: The cart and its resolved lines.
@@ -249,7 +259,8 @@ class CheckoutService:
             raise EmptyCartError("Cart is empty")
 
         priced: list[_PricedLine] = []
-        for cart_item, product, name in await self.repo.list_cart_lines(cart.id):
+        lines = await self.repo.list_cart_lines(cart.id, normalize_lang(lang))
+        for cart_item, product, name in lines:
             if not product.is_active:
                 continue
             if cart_item.qty > product.qty:

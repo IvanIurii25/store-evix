@@ -18,7 +18,7 @@ Mounted without the ``/api/v1`` prefix — the integrator adds it.
 
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user, guest_or_user
@@ -78,6 +78,7 @@ async def get_cart(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> CartOut:
     """Return the current cart with prices/totals recomputed live (§2.3).
 
@@ -85,6 +86,8 @@ async def get_cart(
         request: Incoming request (source of the guest cookie).
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
+        lang: Requested display language for line names (default ``ro``;
+            unsupported values fall back to the default).
 
     Returns:
         CartOut: The live-priced cart (empty when the caller has no cart).
@@ -92,7 +95,7 @@ async def get_cart(
     user_id = user.id if user is not None else None
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
-    return await service.get_cart(user_id, token)
+    return await service.get_cart(user_id, token, lang)
 
 
 @router.post("/items", response_model=CartOut, status_code=status.HTTP_201_CREATED)
@@ -102,6 +105,7 @@ async def add_item(
     response: Response,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> CartOut:
     """Add a product to the cart (increments ``qty`` if already present, §2.3).
 
@@ -113,6 +117,7 @@ async def add_item(
         response: Outgoing response (to set the guest cookie).
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
+        lang: Requested display language for line names (default ``ro``).
 
     Returns:
         CartOut: The re-rendered cart.
@@ -129,7 +134,9 @@ async def add_item(
         _set_session_cookie(response, token)
     service = CartService(session)
     try:
-        return await service.add_item(user_id, token, data.product_id, data.qty)
+        return await service.add_item(
+            user_id, token, data.product_id, data.qty, lang
+        )
     except ProductNotAvailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -143,6 +150,7 @@ async def update_item(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> CartOut:
     """Set an absolute quantity on an existing cart line.
 
@@ -152,6 +160,7 @@ async def update_item(
         request: Incoming request (guest cookie).
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
+        lang: Requested display language for line names (default ``ro``).
 
     Returns:
         CartOut: The re-rendered cart.
@@ -163,7 +172,9 @@ async def update_item(
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
     try:
-        return await service.update_item(user_id, token, product_id, data.qty)
+        return await service.update_item(
+            user_id, token, product_id, data.qty, lang
+        )
     except ItemNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -176,6 +187,7 @@ async def remove_item(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> CartOut:
     """Remove a line from the cart.
 
@@ -184,6 +196,7 @@ async def remove_item(
         request: Incoming request (guest cookie).
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
+        lang: Requested display language for line names (default ``ro``).
 
     Returns:
         CartOut: The re-rendered cart.
@@ -195,7 +208,7 @@ async def remove_item(
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
     try:
-        return await service.remove_item(user_id, token, product_id)
+        return await service.remove_item(user_id, token, product_id, lang)
     except ItemNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -208,6 +221,7 @@ async def merge_cart(
     response: Response,
     user: AppUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> CartOut:
     """Merge the guest cart (cookie) into the user cart after login (§7).
 
@@ -219,6 +233,7 @@ async def merge_cart(
         response: Outgoing response (to clear the guest cookie).
         user: The authenticated user (required).
         session: Injected async DB session.
+        lang: Requested display language for line names (default ``ro``).
 
     Returns:
         CartOut: The re-rendered user cart.
@@ -226,7 +241,7 @@ async def merge_cart(
     service = CartService(session)
     token = _read_session_token(request)
     if token is None:
-        return await service.get_cart(user.id, None)
-    merged = await service.merge_guest_into_user(user.id, token)
+        return await service.get_cart(user.id, None, lang)
+    merged = await service.merge_guest_into_user(user.id, token, lang)
     response.delete_cookie(SESSION_COOKIE)
     return merged
