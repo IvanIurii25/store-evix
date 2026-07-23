@@ -45,4 +45,15 @@ celery_app.conf.update(
     # Drop task results from the backend after an hour — health/infra tasks
     # have no long-lived result to keep.
     result_expires=3600,
+    # Celery Beat schedule (run by a single `beat` process). The restock sweep
+    # is a path-independent safety net: it notifies waiters for any product that
+    # is back in stock but wasn't caught by the qty-transition hook (e.g. stock
+    # restored by an order cancellation or an import). Idempotent with the hook
+    # (both mark subscriptions `notified`).
+    beat_schedule={
+        "restock-sweep": {
+            "task": "restock.sweep",
+            "schedule": 600.0,  # every 10 minutes
+        },
+    },
 )

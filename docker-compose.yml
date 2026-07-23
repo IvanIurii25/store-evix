@@ -101,6 +101,16 @@ services:
     command:
       ["uv", "run", "celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency", "2"]
 
+  beat:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *app_env
+    command:
+      ["uv", "run", "celery", "-A", "app.core.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
+
 volumes:
   evix_pgdata:
   evix_redisdata:
