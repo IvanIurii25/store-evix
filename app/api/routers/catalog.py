@@ -19,6 +19,7 @@ from app.core.db import get_session
 from app.schemas.catalog import (
     CategoryDetail,
     CategoryNode,
+    ProductCardOut,
     ProductDetail,
     ProductListing,
     ProductSort,
@@ -212,3 +213,29 @@ async def get_product(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
+
+
+@router.get("/products/{slug}/related", response_model=list[ProductCardOut])
+async def get_related_products(
+    slug: str,
+    limit: int = Query(default=8, ge=1, le=24),
+    lang: str = Depends(get_lang),
+    session: AsyncSession = Depends(get_session),
+) -> list[ProductCardOut]:
+    """Return in-stock sibling products for cross-sell on the product page.
+
+    Best-effort: never 404s. An unknown slug, an uncategorized product, or a
+    category with no other in-stock products yields an empty list. Cards match
+    the listing cards field-for-field (same ``product_card`` read-model).
+
+    Args:
+        slug: Localized product slug.
+        limit: Maximum number of related cards (1..24, default 8).
+        lang: Resolved request language.
+        session: Injected async DB session.
+
+    Returns:
+        list[ProductCardOut]: In-stock sibling cards, newest-first (may be empty).
+    """
+    service = CatalogService(session)
+    return await service.related_products(slug, lang, limit)

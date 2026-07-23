@@ -263,6 +263,62 @@ class CatalogRepository:
         rows = (await self.session.execute(stmt)).scalars().all()
         return list(rows)
 
+    async def get_card(self, product_id: int, lang: str) -> ProductCard | None:
+        """Fetch a single ``product_card`` row for a product in one language.
+
+        Args:
+            product_id: Product primary key.
+            lang: Requested language code.
+
+        Returns:
+            ProductCard | None: The card row, or ``None`` if the product is not
+                published in that language (inactive / missing translation).
+        """
+        stmt = select(ProductCard).where(
+            ProductCard.product_id == product_id,
+            ProductCard.lang == lang,
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def list_related_cards(
+        self,
+        category_id: int,
+        lang: str,
+        exclude_product_id: int,
+        limit: int,
+    ) -> list[ProductCard]:
+        """Fetch in-stock sibling cards from one category, newest-first (§5.2).
+
+        Reads the same denormalized ``product_card`` read-model as the listing
+        (no joins), so related cards match listing cards field-for-field. Unlike
+        the listing this also requires ``in_stock`` — cross-sell must be buyable —
+        and matches ``category_id`` directly (the product's own category, not the
+        subtree). One query, no N+1.
+
+        Args:
+            category_id: The current product's category.
+            lang: Requested language code.
+            exclude_product_id: The current product, excluded from its own siblings.
+            limit: Maximum number of cards to return.
+
+        Returns:
+            list[ProductCard]: In-stock sibling cards ordered ``product_id`` DESC.
+        """
+        stmt = (
+            select(ProductCard)
+            .where(
+                ProductCard.lang == lang,
+                ProductCard.is_active.is_(True),
+                ProductCard.in_stock.is_(True),
+                ProductCard.category_id == category_id,
+                ProductCard.product_id != exclude_product_id,
+            )
+            .order_by(desc(ProductCard.product_id))
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return list(rows)
+
     @staticmethod
     def order_columns_for(sort: str) -> list:
         """Return ORDER BY expressions for a sort key (total order via product_id)."""

@@ -385,9 +385,67 @@ class CatalogService:
             next_cursor = _encode_cursor(sort, last.product_id, price)
 
         return ProductListing(
-            data=[ProductCardOut.model_validate(card) for card in page],
+            data=[self._card_to_out(card) for card in page],
             next_cursor=next_cursor,
         )
+
+    @staticmethod
+    def _card_to_out(card: ProductCard) -> ProductCardOut:
+        """Project one ``product_card`` read-model row into its API card DTO.
+
+        The single card projection shared by every card surface (category /
+        store-wide listings and related products), so a related card is byte-for-byte
+        identical to the same product's listing card (name, slug, price, old_price,
+        in_stock, main_image_url, badge).
+
+        Args:
+            card: A ``product_card`` read-model row.
+
+        Returns:
+            ProductCardOut: The listing-card DTO.
+        """
+        return ProductCardOut.model_validate(card)
+
+    async def related_products(
+        self,
+        slug: str,
+        lang: str,
+        limit: int,
+    ) -> list[ProductCardOut]:
+        """Return in-stock sibling products for cross-sell on the product page.
+
+        Best-effort and never 404s (the PDP already 404s a missing product): an
+        unknown slug, a product with no card in the language, or a product whose
+        category has no other in-stock siblings all yield an empty list.
+
+        Siblings are read from the same ``product_card`` read-model as the
+        listing (so cards match field-for-field), filtered to ``is_active`` **and**
+        ``in_stock`` (cross-sell must be buyable), scoped to the product's own
+        ``category_id``, excluding the product itself, newest-first, capped at
+        ``limit``. One query, no N+1.
+
+        Args:
+            slug: Localized slug of the current product.
+            lang: Requested language code.
+            limit: Maximum number of related cards to return.
+
+        Returns:
+            list[ProductCardOut]: In-stock sibling cards (newest-first), possibly
+                empty.
+        """
+        translation = await self.repo.get_product_translation_by_slug(slug, lang)
+        if translation is None:
+            return []
+        card = await self.repo.get_card(translation.product_id, lang)
+        if card is None:
+            return []
+        sibling_cards = await self.repo.list_related_cards(
+            category_id=card.category_id,
+            lang=lang,
+            exclude_product_id=card.product_id,
+            limit=limit,
+        )
+        return [self._card_to_out(sibling) for sibling in sibling_cards]
 
     # ------------------------------------------------------------------ #
     # Product detail (PDP)
