@@ -12,6 +12,7 @@ from app.models import (
     content_page,
     order,
     promo,
+    restock,
     settings,
     user,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "cart",
     "order",
     "promo",
+    "restock",
     "settings",
     "analytics",
 ]

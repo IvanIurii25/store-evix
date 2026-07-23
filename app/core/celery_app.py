@@ -19,7 +19,7 @@ celery_app = Celery(
     "evix",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.health"],
+    include=["app.tasks.health", "app.tasks.restock"],
 )
 """The shared Celery app. Import this in task modules to register tasks and in
 the worker CLI (``celery -A app.core.celery_app``)."""

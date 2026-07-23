@@ -49,6 +49,7 @@ from app.schemas.admin_catalog import (
     ProductTranslationOut,
     ProductUpdate,
 )
+from app.schemas.restock import RestockWaitersOut
 from app.services.admin_catalog_service import (
     AdminCatalogService,
     AdminConflictError,
@@ -57,6 +58,7 @@ from app.services.admin_catalog_service import (
 )
 from app.services.catalog_service import NotFoundError as CatalogNotFoundError
 from app.services.catalog_service import PublicationError
+from app.services.restock_service import RestockService
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
 
@@ -360,6 +362,20 @@ async def get_product(
     except AdminNotFoundError as exc:
         _raise_http(exc)
     return await _build_product_out(service, product)
+
+
+@router.get(
+    "/products/{product_id}/restock-waiters",
+    response_model=RestockWaitersOut,
+)
+async def get_restock_waiters(
+    product_id: int,
+    _staff: AppUser = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+) -> RestockWaitersOut:
+    """Return the number of active restock waiters for a product (demand, §9)."""
+    count = await RestockService(session).waiter_count(product_id)
+    return RestockWaitersOut(count=count)
 
 
 @router.patch("/products/{product_id}", response_model=ProductOut)

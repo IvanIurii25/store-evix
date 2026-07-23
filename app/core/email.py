@@ -33,6 +33,19 @@ _COD_INSTRUCTION: str = (
     "to hand to the courier on delivery."
 )
 
+# Bilingual restock-notification copy, keyed by subscription language (§7). The
+# Romanian text is the fallback for any unexpected language value.
+_RESTOCK_SUBJECT: dict[str, str] = {
+    "ru": "Товар снова в наличии — evix",
+    "ro": "Produsul este din nou disponibil — evix",
+}
+_RESTOCK_BODY: dict[str, str] = {
+    "ru": "{name} снова в наличии. Успейте заказать:\n{url}\n",
+    "ro": "{name} este din nou disponibil. Comandă acum:\n{url}\n",
+}
+# Language used when a subscription's ``lang`` is missing from the copy tables.
+_RESTOCK_DEFAULT_LANG: str = "ro"
+
 
 def _render_confirmation(
     *,
@@ -61,6 +74,36 @@ def _render_confirmation(
         f"Order number: {order_number}\n"
         f"Total: {total} {currency}\n\n"
         f"{_COD_INSTRUCTION}\n"
+    )
+    return message
+
+
+def _render_restock(
+    *,
+    to: str,
+    product_name: str,
+    product_url: str,
+    lang: str,
+) -> EmailMessage:
+    """Build the restock-notification :class:`EmailMessage` (bilingual, §7).
+
+    Args:
+        to: Recipient account email.
+        product_name: Product display name in the subscription language.
+        product_url: Absolute storefront URL of the product card.
+        lang: Subscription language (``ru`` | ``ro``); unknown values fall back
+            to :data:`_RESTOCK_DEFAULT_LANG`.
+
+    Returns:
+        EmailMessage: A ready-to-send message with subject, sender and body.
+    """
+    copy_lang = lang if lang in _RESTOCK_SUBJECT else _RESTOCK_DEFAULT_LANG
+    message = EmailMessage()
+    message["From"] = settings.email_from
+    message["To"] = to
+    message["Subject"] = _RESTOCK_SUBJECT[copy_lang]
+    message.set_content(
+        _RESTOCK_BODY[copy_lang].format(name=product_name, url=product_url)
     )
     return message
 
@@ -137,6 +180,21 @@ async def send_order_confirmation(
         total=total,
         currency=currency or settings.currency,
     )
+    await _dispatch(message)
+
+
+async def _dispatch(message: EmailMessage) -> None:
+    """Send a rendered message through the backend from ``settings.email_backend``.
+
+    An unknown backend value warns and falls back to the console backend so a
+    misconfiguration never raises inside a post-commit side effect.
+
+    Args:
+        message: The rendered message to deliver.
+
+    Raises:
+        aiosmtplib.SMTPException: If the SMTP backend fails to deliver.
+    """
     if settings.email_backend == BACKEND_SMTP:
         await _send_smtp(message)
         return
@@ -146,3 +204,35 @@ async def send_order_confirmation(
             settings.email_backend,
         )
     await _send_console(message)
+
+
+async def send_restock_notification(
+    *,
+    to: str,
+    product_name: str,
+    product_url: str,
+    lang: str,
+) -> None:
+    """Render and dispatch a "back in stock" email (bilingual, §7).
+
+    The backend is selected from ``settings.email_backend`` (console logs, smtp
+    delivers) — identical gating to :func:`send_order_confirmation`.
+
+    Args:
+        to: Recipient account email.
+        product_name: Product display name in the subscription language.
+        product_url: Absolute storefront URL of the product card.
+        lang: Subscription language (``ru`` | ``ro``).
+
+    Raises:
+        aiosmtplib.SMTPException: If the SMTP backend fails to deliver. Callers
+            firing this from the notification task must catch it per-recipient so
+            one failure never blocks the rest of the batch (§8.6).
+    """
+    message = _render_restock(
+        to=to,
+        product_name=product_name,
+        product_url=product_url,
+        lang=lang,
+    )
+    await _dispatch(message)

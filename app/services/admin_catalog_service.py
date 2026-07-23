@@ -9,6 +9,7 @@ one place (§10). No HTTP knowledge: the router maps the raised exceptions.
 """
 
 import asyncio
+import logging
 
 from fastapi import UploadFile
 from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select
@@ -47,6 +48,8 @@ from app.schemas.admin_catalog import (
     ProductUpdate,
 )
 from app.services.catalog_service import CatalogService
+
+logger = logging.getLogger(__name__)
 
 # Default media kind for v1 uploads (only images are allowed — §2.1).
 DEFAULT_MEDIA_KIND: str = "image"
@@ -479,6 +482,9 @@ class AdminCatalogService:
             PublicationError: On activation without both translations (§2.1.1).
         """
         product = await self._get_product(product_id)
+        # Capture stock BEFORE applying so we can detect an out-of-stock →
+        # in-stock transition and fire the restock-notification task (§3).
+        old_qty = product.qty
         data = payload.model_dump(exclude_unset=True)
         if "category_id" in data and data["category_id"] is not None:
             await self._get_category(data["category_id"])
@@ -490,7 +496,36 @@ class AdminCatalogService:
         await self.catalog.rebuild_cards([product.id])
         await self.session.commit()
         await self.session.refresh(product)
+        # Post-commit side effect: on a 0 → in-stock transition, enqueue the
+        # restock-notification task. Enqueue is OUTSIDE the transaction and
+        # defensively wrapped — a broker hiccup must never fail a committed
+        # product update.
+        self._notify_if_restocked(product.id, old_qty, product.qty)
         return product
+
+    @staticmethod
+    def _notify_if_restocked(product_id: int, old_qty: int, new_qty: int) -> None:
+        """Enqueue the restock task if stock went from ``<=0`` to ``>0`` (§3).
+
+        The Celery task is imported lazily to avoid an import cycle
+        (``app.tasks.restock`` → service). Any enqueue failure is swallowed and
+        logged so a broker outage cannot fail an already-committed product write.
+
+        Args:
+            product_id: The updated product.
+            old_qty: Stock before the update.
+            new_qty: Stock after the update.
+        """
+        if not (old_qty <= 0 and new_qty > 0):
+            return
+        try:
+            from app.tasks.restock import send_restock_notifications
+
+            send_restock_notifications.delay(product_id)
+        except Exception:  # noqa: BLE001 — enqueue must not fail the product write
+            logger.exception(
+                "restock: failed to enqueue notification for product %s", product_id
+            )
 
     async def delete_product(self, product_id: int) -> None:
         """Delete a product with its translations, media, attributes and cards.

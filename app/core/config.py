@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
     email_from: str = "orders@evix.md"
 
+    # Storefront base URL used to build absolute product links in emails (e.g.
+    # restock notifications). No trailing slash.
+    storefront_base_url: str = "https://shop.evix.md"
+
     # Rate limiting (§5.4), Redis-backed. Format "<count>/<window_seconds>".
     rate_limit_login: str = "5/60"
     rate_limit_checkout: str = "10/60"
