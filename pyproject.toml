@@ -43,6 +43,9 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Collect both the default ``Test*`` prefix and the methodology guide's
+# ``<Resource><Action>Test`` suffix convention so either naming form runs.
+python_classes = ["Test*", "*Test"]
 
 [tool.ruff]
 line-length = 88
