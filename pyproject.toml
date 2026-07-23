@@ -25,6 +25,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "factory-boy>=3.3.3",
     "httpx>=0.28.0",
     "pre-commit>=4.6.0",
     "pytest>=8.3.0",
@@ -69,3 +70,14 @@ omit = ["app/main.py", "*/__init__.py"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+# Lines that are legitimately unreachable or defensive are excluded from the
+# denominator (rather than tested for the sake of a number). Keep this list
+# tight — prefer a real test over a blanket pragma.
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "\\.\\.\\.",
+    "@(abc\\.)?abstractmethod",
+]
