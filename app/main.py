@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routers.admin_catalog import router as admin_catalog_router
+from app.api.routers.admin_content_pages import router as admin_content_pages_router
 from app.api.routers.admin_customers import router as admin_customers_router
 from app.api.routers.admin_dashboard import router as admin_dashboard_router
 from app.api.routers.admin_orders import router as admin_orders_router
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_customers_router, prefix=API_V1_PREFIX)
     app.include_router(admin_dashboard_router, prefix=API_V1_PREFIX)
     app.include_router(admin_settings_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_content_pages_router, prefix=API_V1_PREFIX)
     app.include_router(site_router, prefix=API_V1_PREFIX)
     app.include_router(track_router, prefix=API_V1_PREFIX)
 
