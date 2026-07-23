@@ -71,13 +71,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
+    environment: &app_env
       APP_ENV: local
       LOG_LEVEL: INFO
       DATABASE_URL: postgresql+asyncpg://evix:evix@db:5432/evix_store
       DB_POOL_SIZE: "20"
       DB_MAX_OVERFLOW: "10"
       REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
       STORAGE_BACKEND: s3
       S3_ENDPOINT_URL: http://minio:9000
       S3_PUBLIC_URL: http://localhost:59000/evix-media
@@ -86,6 +88,18 @@ services:
       SMTP_PORT: "1025"
     ports:
       - "58000:8000"
+
+  worker:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *app_env
+    command:
+      ["uv", "run", "celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency", "2"]
 
 volumes:
   evix_pgdata:

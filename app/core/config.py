@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # Redis: refresh-token blacklist, rate-limit (§5.4, §7).
     redis_url: str = "redis://localhost:56379/0"
 
+    # Celery: broker + result backend on a dedicated Redis DB (/1), kept apart
+    # from the rate-limit/blacklist DB (/0) so task traffic never collides.
+    celery_broker_url: str = "redis://localhost:56379/1"
+    celery_result_backend: str = "redis://localhost:56379/1"
+
     # Store config (§2.6): single-tenant → app config, not a DB singleton.
     currency: str = "MDL"  # one fixed currency; no currency column in DB
     default_lang: str = "ro"  # ru | ro
