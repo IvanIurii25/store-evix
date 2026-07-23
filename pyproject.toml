@@ -77,6 +77,9 @@ concurrency = ["greenlet", "thread"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+# Hard gate: any `coverage report` / `pytest --cov` run fails below 90%.
+# Current TOTAL is 99% (branch); the floor guards against regressions.
+fail_under = 90
 # Lines that are legitimately unreachable or defensive are excluded from the
 # denominator (rather than tested for the sake of a number). Keep this list
 # tight — prefer a real test over a blanket pragma.

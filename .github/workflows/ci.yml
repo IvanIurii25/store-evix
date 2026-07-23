@@ -55,5 +55,5 @@ jobs:
       - name: Format check (ruff)
         run: uv run ruff format --check .
 
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Run tests (coverage gate ≥90%)
+        run: uv run pytest -q --cov --cov-report=term-missing --cov-fail-under=90

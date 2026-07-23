@@ -35,8 +35,8 @@ check: lint format-check test ## Lint + format-check + tests (local CI gate)
 test: ## Run the full test suite (needs infra: make up)
 	uv run pytest -q
 
-test-cov: ## Run tests with coverage report
-	uv run pytest --cov --cov-report=term-missing
+test-cov: ## Run tests with coverage report (fails below 90%)
+	uv run pytest --cov --cov-report=term-missing --cov-fail-under=90
 
 test-file: ## Run one test path (usage: make test-file file=tests/auth)
 	uv run pytest $(file) -v
