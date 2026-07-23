@@ -23,8 +23,27 @@ from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
 
+# Fixed responsive width set — the single source of truth for the WebP variant
+# set produced by both the upload path and the backfill script. One WebP variant
+# is generated per width per original.
+RESPONSIVE_WIDTHS: tuple[int, ...] = (200, 400, 800, 1200)
+
+# Hard ceiling on a source image's width/height (px). Rejects absurd / hostile
+# uploads before the expensive resize; Pillow's own ``MAX_IMAGE_PIXELS`` bomb
+# guard stays in force on top of this (never disabled).
+MAX_UPLOAD_DIMENSION: int = 6000
+
 # Modes carrying an alpha channel — encoded straight through as WebP RGBA.
 _ALPHA_MODES: frozenset[str] = frozenset({"RGBA", "LA"})
+
+
+class ImageValidationError(ValueError):
+    """Raised when uploaded bytes are not an acceptable raster image.
+
+    Covers both undecodable / non-raster input (SVG, PDF, garbage) and rasters
+    whose dimensions exceed :data:`MAX_UPLOAD_DIMENSION`. Subclasses
+    :class:`ValueError` so existing ``except ValueError`` sites keep working.
+    """
 
 
 def _normalise_mode(image: Image.Image) -> Image.Image:
@@ -112,6 +131,54 @@ def generate_webp_variants(
             return variants
     except UnidentifiedImageError as exc:
         raise ValueError("data is not a decodable image") from exc
+
+
+def validate_and_build_variants(data: bytes) -> dict[int, bytes]:
+    """Validate raw upload bytes and produce the responsive WebP variant set.
+
+    The single "converter + gate" used by both upload paths: it decodes ``data``
+    to confirm it is a genuine raster (rejecting SVG/PDF/garbage), enforces the
+    :data:`MAX_UPLOAD_DIMENSION` ceiling on either dimension, and — when valid —
+    returns the same fixed :data:`RESPONSIVE_WIDTHS` WebP set the backfill
+    produces via :func:`generate_fixed_webp_set`.
+
+    The dimension check reads only the header via :meth:`PIL.Image.Image.size`
+    (no full decode), so an oversized image is rejected before the costly
+    resize. Pillow's ``MAX_IMAGE_PIXELS`` decompression-bomb guard is left at its
+    default and is *not* disabled.
+
+    This function is synchronous and CPU-bound like the rest of this module;
+    async callers MUST wrap it in :func:`asyncio.to_thread`.
+
+    Args:
+        data: The raw uploaded file bytes.
+
+    Returns:
+        dict[int, bytes]: A mapping of every :data:`RESPONSIVE_WIDTHS` width to
+        its WebP bytes (widths sharing an effective width share the same bytes).
+
+    Raises:
+        ImageValidationError: If ``data`` is not a decodable raster, or if its
+            width or height exceeds :data:`MAX_UPLOAD_DIMENSION`.
+    """
+    try:
+        with Image.open(BytesIO(data)) as opened:
+            width, height = opened.size
+    except UnidentifiedImageError as exc:
+        raise ImageValidationError("data is not a decodable image") from exc
+    except Image.DecompressionBombError as exc:
+        raise ImageValidationError("image exceeds the pixel-bomb limit") from exc
+
+    if width > MAX_UPLOAD_DIMENSION or height > MAX_UPLOAD_DIMENSION:
+        raise ImageValidationError(
+            f"image dimension exceeds {MAX_UPLOAD_DIMENSION}px "
+            f"(got {width}x{height})"
+        )
+
+    try:
+        return generate_fixed_webp_set(data, RESPONSIVE_WIDTHS)
+    except ValueError as exc:
+        raise ImageValidationError(str(exc)) from exc
 
 
 def generate_fixed_webp_set(

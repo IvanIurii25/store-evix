@@ -9,11 +9,14 @@ domain exceptions to the unified error envelope via :class:`HTTPException`.
 Prefix is ``/admin`` (the integrator mounts the router; no ``/api/v1`` here).
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
 from app.core.db import get_session
+from app.core.images import ImageValidationError, validate_and_build_variants
 from app.core.storage import get_storage
 from app.models.catalog import Attribute, Category, Product
 from app.models.user import AppUser
@@ -458,12 +461,20 @@ async def upload_asset(
         )
     await file.seek(0)
     data = await file.read()
+    try:
+        variants = await asyncio.to_thread(validate_and_build_variants, data)
+    except ImageValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unsupported or too-large image",
+        ) from exc
     storage = get_storage()
     url = await storage.save(
         data,
         filename=file.filename or "",
         content_type=file.content_type or "application/octet-stream",
     )
+    await storage.save_variants(url, variants)
     return AssetOut(url=url)
 
 

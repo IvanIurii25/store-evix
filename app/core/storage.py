@@ -30,6 +30,31 @@ from app.core.config import Settings, settings
 # Object-key prefix for S3-stored media (keeps uploads grouped in the bucket).
 _S3_KEY_PREFIX: str = "media"
 
+# Content type + long-lived immutable cache header for the generated WebP
+# variants — mirrors the backfill (scripts/generate_media_variants.py) exactly so
+# upload-time and backfilled variants are byte-for-byte comparable on the object
+# store.
+_VARIANT_CONTENT_TYPE: str = "image/webp"
+_VARIANT_CACHE_CONTROL: str = "public, max-age=31536000, immutable"
+
+
+def _variant_object_name(original_url: str, width: int) -> str:
+    """Build a variant object name from an original URL and a width.
+
+    Mirrors the backfill naming: the original's basename ``<name>.<ext>`` has its
+    extension stripped and the variant becomes ``<name>_<width>.webp``.
+
+    Args:
+        original_url: The public URL of the stored original (only its basename is
+            used).
+        width: The variant width in pixels.
+
+    Returns:
+        str: ``<name>_<width>.webp`` (no directory prefix).
+    """
+    stem = Path(original_url).stem
+    return f"{stem}_{width}.webp"
+
 
 def _object_name(filename: str) -> str:
     """Derive a random, collision-free object name preserving the extension.
@@ -59,6 +84,24 @@ class Storage(ABC):
 
         Returns:
             str: The public URL the stored object is served from.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def save_variants(
+        self, original_url: str, variants: dict[int, bytes]
+    ) -> None:
+        """Persist the responsive WebP variants alongside a stored original.
+
+        Each variant is stored next to the original under the object name
+        ``<name>_<width>.webp``, where ``<name>`` is the original URL's basename
+        with its extension stripped (mirrors the backfill's naming). Safe to call
+        once per upload; overwriting an existing variant is fine.
+
+        Args:
+            original_url: The public URL previously returned by :meth:`save`.
+            variants: A ``{width: webp_bytes}`` mapping (e.g. from
+                :func:`app.core.images.validate_and_build_variants`).
         """
         raise NotImplementedError
 
@@ -106,6 +149,21 @@ class LocalStorage(Storage):
         with destination.open("wb") as out:
             out.write(data)
         return f"{self._url_prefix}/{name}"
+
+    async def save_variants(
+        self, original_url: str, variants: dict[int, bytes]
+    ) -> None:
+        """Write each WebP variant next to the original under ``media_root``.
+
+        Args:
+            original_url: The public URL returned by :meth:`save`.
+            variants: A ``{width: webp_bytes}`` mapping to persist.
+        """
+        self._root.mkdir(parents=True, exist_ok=True)
+        for width, payload in variants.items():
+            name = _variant_object_name(original_url, width)
+            with (self._root / name).open("wb") as out:
+                out.write(payload)
 
     async def delete(self, url: str) -> None:
         """Unlink the file under ``media_root`` named by the URL's basename.
@@ -176,6 +234,37 @@ class S3Storage(Storage):
                 ContentType=content_type,
             )
         return self._public_url_for(key)
+
+    async def save_variants(
+        self, original_url: str, variants: dict[int, bytes]
+    ) -> None:
+        """Put each WebP variant under ``media/<name>_<width>.webp`` in the bucket.
+
+        Mirrors the backfill exactly: ``image/webp`` content type and a long-lived
+        immutable ``Cache-Control`` on every variant object.
+
+        Args:
+            original_url: The public URL returned by :meth:`save`.
+            variants: A ``{width: webp_bytes}`` mapping to persist.
+        """
+        if not variants:
+            return
+        async with self._session.client(
+            "s3",
+            endpoint_url=self._endpoint_url,
+            aws_access_key_id=self._access_key,
+            aws_secret_access_key=self._secret_key,
+            region_name=self._region,
+        ) as client:
+            for width, payload in variants.items():
+                key = f"{_S3_KEY_PREFIX}/{_variant_object_name(original_url, width)}"
+                await client.put_object(
+                    Bucket=self._bucket,
+                    Key=key,
+                    Body=payload,
+                    ContentType=_VARIANT_CONTENT_TYPE,
+                    CacheControl=_VARIANT_CACHE_CONTROL,
+                )
 
     async def delete(self, url: str) -> None:
         """Delete the bucket object whose key is ``media/<basename-of-url>``.

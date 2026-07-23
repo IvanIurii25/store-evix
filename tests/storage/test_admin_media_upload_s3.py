@@ -11,12 +11,20 @@ from io import BytesIO
 import httpx
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Media
 
 pytestmark = pytest.mark.asyncio
+
+
+def _png_bytes(width: int = 1000, height: int = 800) -> bytes:
+    """Return an in-memory, genuinely decodable PNG (the upload gate needs one)."""
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), "red").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 _S3_ENDPOINT: str = "http://localhost:59000"
 _S3_ACCESS_KEY: str = "evixminio"
@@ -88,7 +96,8 @@ async def test_admin_upload_uses_s3_backend(
     assert product.status_code == 201, product.text
     product_id = product.json()["id"]
 
-    image = BytesIO(b"\x89PNG\r\n\x1a\ns3-upload-bytes")
+    source = _png_bytes()
+    image = BytesIO(source)
     response = await client.post(
         f"/api/v1/admin/products/{product_id}/media",
         files={"file": ("photo.png", image, "image/png")},
@@ -107,8 +116,14 @@ async def test_admin_upload_uses_s3_backend(
     ).scalar_one()
     assert media.url == body["url"]
 
-    # The object is downloadable from MinIO by the stored public URL.
+    # The original object is downloadable from MinIO by the stored public URL.
     async with httpx.AsyncClient(timeout=10.0) as downloader:
         obj = await downloader.get(body["url"])
-    assert obj.status_code == 200, obj.text
-    assert obj.content == b"\x89PNG\r\n\x1a\ns3-upload-bytes"
+        assert obj.status_code == 200, obj.text
+        assert obj.content == source
+
+        # A responsive WebP variant is stored alongside it.
+        variant_url = body["url"].rsplit(".", 1)[0] + "_400.webp"
+        variant = await downloader.get(variant_url)
+    assert variant.status_code == 200, variant.text
+    assert Image.open(BytesIO(variant.content)).format == "WEBP"

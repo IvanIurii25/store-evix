@@ -9,8 +9,16 @@ from io import BytesIO
 
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 
 pytestmark = pytest.mark.asyncio
+
+
+def _png_bytes(width: int = 1000, height: int = 800) -> bytes:
+    """Return an in-memory, genuinely decodable PNG (the upload gate needs one)."""
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), "red").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _translations(slug: str) -> list[dict]:
@@ -64,7 +72,7 @@ async def _upload(client: AsyncClient, product_id: int, name: str) -> dict:
     """Upload one PNG to a product and return the created media row."""
     resp = await client.post(
         f"/api/v1/admin/products/{product_id}/media",
-        files={"file": (name, BytesIO(b"\x89PNG\r\n\x1a\nx"), "image/png")},
+        files={"file": (name, BytesIO(_png_bytes()), "image/png")},
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -92,13 +100,16 @@ async def test_delete_media_removes_row_and_file(
     category_id = await _make_category(client)
     product_id = await _make_product(client, category_id, "SKU-DEL")
     media = await _upload(client, product_id, "a.png")
-    assert len(list(tmp_path.iterdir())) == 1
+    # One original PNG plus its four responsive WebP variants.
+    assert len([p for p in tmp_path.iterdir() if p.suffix == ".png"]) == 1
+    assert len([p for p in tmp_path.iterdir() if p.suffix == ".webp"]) == 4
 
     resp = await client.delete(
         f"/api/v1/admin/products/{product_id}/media/{media['id']}"
     )
     assert resp.status_code == 204, resp.text
-    assert list(tmp_path.iterdir()) == []
+    # Delete removes the original; variants are side files (not tracked by the row).
+    assert [p for p in tmp_path.iterdir() if p.suffix == ".png"] == []
 
 
 async def test_delete_media_wrong_product_is_404(
@@ -163,6 +174,56 @@ async def test_reorder_media_rejects_non_permutation(
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "invalid"
+
+
+# --------------------------------------------------------------------------- #
+# Upload optimization gate (validate + convert)
+# --------------------------------------------------------------------------- #
+async def test_upload_svg_rejected_as_non_raster(
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """An ``image/svg+xml`` upload passes the prefix check but fails the decode gate."""
+    _use_local_storage(monkeypatch, tmp_path)
+    category_id = await _make_category(client)
+    product_id = await _make_product(client, category_id, "SKU-SVG")
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+    resp = await client.post(
+        f"/api/v1/admin/products/{product_id}/media",
+        files={"file": ("logo.svg", BytesIO(svg), "image/svg+xml")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "invalid"
+    # Nothing was persisted — the gate runs before the save.
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_asset_upload_rejects_svg_and_accepts_raster(
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The bare asset endpoint gates non-raster uploads (422) and stores rasters."""
+    _use_local_storage(monkeypatch, tmp_path)
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+    bad = await client.post(
+        "/api/v1/admin/assets",
+        files={"file": ("logo.svg", BytesIO(svg), "image/svg+xml")},
+    )
+    assert bad.status_code == 422, bad.text
+
+    good = await client.post(
+        "/api/v1/admin/assets",
+        files={"file": ("banner.png", BytesIO(_png_bytes()), "image/png")},
+    )
+    assert good.status_code == 201, good.text
+    assert good.json()["url"].startswith("/media/")
+    # Original PNG plus its four responsive WebP variants land on disk.
+    assert len([p for p in tmp_path.iterdir() if p.suffix == ".png"]) == 1
+    assert len([p for p in tmp_path.iterdir() if p.suffix == ".webp"]) == 4
 
 
 # --------------------------------------------------------------------------- #

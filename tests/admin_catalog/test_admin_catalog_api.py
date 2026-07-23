@@ -10,12 +10,20 @@ from io import BytesIO
 
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Category, ProductCard
 
 pytestmark = pytest.mark.asyncio
+
+
+def _png_bytes(width: int = 1000, height: int = 800) -> bytes:
+    """Return an in-memory, genuinely decodable PNG (the upload gate needs one)."""
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), "red").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 # --------------------------------------------------------------------------- #
@@ -375,7 +383,7 @@ async def test_upload_media_creates_file_and_row(
     )
     product_id = product.json()["id"]
 
-    payload = BytesIO(b"\x89PNG\r\n\x1a\nfake-bytes")
+    payload = BytesIO(_png_bytes())
     response = await client.post(
         f"/api/v1/admin/products/{product_id}/media",
         files={"file": ("photo.png", payload, "image/png")},
@@ -385,10 +393,12 @@ async def test_upload_media_creates_file_and_row(
     assert body["url"].startswith("/media/")
     assert body["kind"] == "image"
 
-    # File exists on disk under the temporary media root.
+    # The original PNG plus the four responsive WebP variants land on disk.
     stored = list(tmp_path.iterdir())
-    assert len(stored) == 1
-    assert stored[0].suffix == ".png"
+    originals = [p for p in stored if p.suffix == ".png"]
+    variants = [p for p in stored if p.suffix == ".webp"]
+    assert len(originals) == 1
+    assert len(variants) == 4
 
 
 async def test_upload_non_image_rejected(

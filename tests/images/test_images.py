@@ -8,7 +8,14 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from app.core.images import generate_fixed_webp_set, generate_webp_variants
+from app.core.images import (
+    MAX_UPLOAD_DIMENSION,
+    RESPONSIVE_WIDTHS,
+    ImageValidationError,
+    generate_fixed_webp_set,
+    generate_webp_variants,
+    validate_and_build_variants,
+)
 
 
 def _jpeg_bytes(width: int, height: int) -> bytes:
@@ -138,3 +145,70 @@ def test_fixed_set_non_image_bytes_raise_value_error():
     """Undecodable input surfaces as a clear ValueError."""
     with pytest.raises(ValueError):
         generate_fixed_webp_set(b"not an image at all", [200])
+
+
+# --------------------------------------------------------------------------- #
+# validate_and_build_variants — the upload "converter + gate"
+# --------------------------------------------------------------------------- #
+def test_validate_valid_raster_returns_full_width_set():
+    """A valid raster yields every responsive width as a WEBP variant."""
+    data = _jpeg_bytes(2000, 1500)
+
+    variants = validate_and_build_variants(data)
+
+    assert set(variants) == set(RESPONSIVE_WIDTHS)
+    for width, out in variants.items():
+        image = Image.open(BytesIO(out))
+        assert image.format == "WEBP"
+        assert image.width == width
+
+
+def test_validate_small_raster_still_returns_full_width_set():
+    """A source narrower than the widest request still returns every key."""
+    data = _jpeg_bytes(500, 400)
+
+    variants = validate_and_build_variants(data)
+
+    # Fixed set never 404s the srcset — all widths present (larger ones capped).
+    assert set(variants) == set(RESPONSIVE_WIDTHS)
+
+
+def test_validate_oversized_width_raises():
+    """A source wider than the ceiling is rejected as an ImageValidationError."""
+    data = _jpeg_bytes(MAX_UPLOAD_DIMENSION + 1000, 1000)
+
+    with pytest.raises(ImageValidationError):
+        validate_and_build_variants(data)
+
+
+def test_validate_oversized_height_raises():
+    """A source taller than the ceiling is rejected too."""
+    data = _jpeg_bytes(1000, MAX_UPLOAD_DIMENSION + 1000)
+
+    with pytest.raises(ImageValidationError):
+        validate_and_build_variants(data)
+
+
+def test_validate_dimension_exactly_at_limit_is_allowed():
+    """A source at exactly the limit passes (strictly-greater rejection)."""
+    data = _jpeg_bytes(MAX_UPLOAD_DIMENSION, 100)
+
+    variants = validate_and_build_variants(data)
+
+    assert set(variants) == set(RESPONSIVE_WIDTHS)
+
+
+def test_validate_non_raster_bytes_raise():
+    """Non-decodable / non-raster input (SVG, garbage) is rejected."""
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+
+    with pytest.raises(ImageValidationError):
+        validate_and_build_variants(svg)
+
+    with pytest.raises(ImageValidationError):
+        validate_and_build_variants(b"not an image at all")
+
+
+def test_image_validation_error_is_value_error():
+    """The typed error subclasses ValueError for existing except sites."""
+    assert issubclass(ImageValidationError, ValueError)

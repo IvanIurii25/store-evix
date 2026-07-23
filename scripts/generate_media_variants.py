@@ -39,12 +39,13 @@ import aioboto3
 from botocore.exceptions import ClientError
 
 from app.core.config import settings
-from app.core.images import generate_fixed_webp_set
+from app.core.images import RESPONSIVE_WIDTHS, generate_fixed_webp_set
 
 logger = logging.getLogger("generate_media_variants")
 
-# Fixed responsive width set — one WebP variant per width, per original.
-WIDTHS: tuple[int, ...] = (200, 400, 800, 1200)
+# Fixed responsive width set — shared with the upload path (single source of
+# truth); one WebP variant per width, per original.
+WIDTHS: tuple[int, ...] = RESPONSIVE_WIDTHS
 
 # Object-key prefix under which all media lives in the bucket.
 _MEDIA_PREFIX: str = "media/"

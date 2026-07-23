@@ -8,11 +8,14 @@ and the ``product_card`` read-model rebuild — those invariants live in exactly
 one place (§10). No HTTP knowledge: the router maps the raised exceptions.
 """
 
+import asyncio
+
 from fastapi import UploadFile
 from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.images import ImageValidationError, validate_and_build_variants
 from app.core.storage import get_storage
 from app.models.catalog import (
     ALLOWED_LANGS,
@@ -607,10 +610,12 @@ class AdminCatalogService:
     ) -> Media:
         """Store an uploaded image and record a :class:`Media` row.
 
-        The bytes are read from the upload and handed to the configured storage
-        backend (:func:`~app.core.storage.get_storage` — local dir or S3/MinIO);
-        the returned public URL is stored as the DB ``url`` (v1: one url, no
-        derivatives).
+        The bytes are read from the upload, validated + converted into the fixed
+        responsive WebP set (the upload is the optimization gate — non-raster or
+        oversized files are rejected), stored via the configured backend
+        (:func:`~app.core.storage.get_storage` — local dir or S3/MinIO), and the
+        variants are persisted alongside the original. The original's public URL
+        is stored as the DB ``url``.
 
         Args:
             product_id: Product the image belongs to.
@@ -621,7 +626,8 @@ class AdminCatalogService:
 
         Raises:
             AdminNotFoundError: If the product does not exist.
-            AdminValidationError: If the file is not an allowed image kind.
+            AdminValidationError: If the file is not an allowed image kind, or is
+                not a decodable raster / exceeds the max upload dimension.
         """
         await self._get_product(product_id)
         if not self._is_allowed_image(upload):
@@ -629,12 +635,17 @@ class AdminCatalogService:
 
         await upload.seek(0)
         data = await upload.read()
+        try:
+            variants = await asyncio.to_thread(validate_and_build_variants, data)
+        except ImageValidationError as exc:
+            raise AdminValidationError("Unsupported or too-large image") from exc
         storage = get_storage()
         url = await storage.save(
             data,
             filename=upload.filename or "",
             content_type=upload.content_type or "application/octet-stream",
         )
+        await storage.save_variants(url, variants)
         position = await self._next_media_position(product_id)
         media = Media(
             product_id=product_id,
