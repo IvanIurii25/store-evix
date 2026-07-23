@@ -69,6 +69,10 @@ extend-immutable-calls = [
 source = ["app"]
 branch = true
 omit = ["app/main.py", "*/__init__.py"]
+# Async endpoint handlers resume inside SQLAlchemy's greenlet bridge; without
+# greenlet-aware tracing every line after the first ``await`` in a handler is
+# mis-reported as uncovered. Required for accurate router/service coverage.
+concurrency = ["greenlet", "thread"]
 
 [tool.coverage.report]
 show_missing = true
