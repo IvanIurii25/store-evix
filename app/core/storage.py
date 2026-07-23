@@ -30,12 +30,13 @@ from app.core.config import Settings, settings
 # Object-key prefix for S3-stored media (keeps uploads grouped in the bucket).
 _S3_KEY_PREFIX: str = "media"
 
-# Content type + long-lived immutable cache header for the generated WebP
-# variants — mirrors the backfill (scripts/generate_media_variants.py) exactly so
-# upload-time and backfilled variants are byte-for-byte comparable on the object
-# store.
+# Long-lived immutable cache header for all stored media. Objects are named by a
+# random uuid (originals) or ``<uuid>_<width>.webp`` (variants), so a given key's
+# bytes never change — safe to cache for a year. Applied to originals in
+# :meth:`S3Storage.save` and to variants (mirrors scripts/generate_media_variants.py).
+_MEDIA_CACHE_CONTROL: str = "public, max-age=31536000, immutable"
 _VARIANT_CONTENT_TYPE: str = "image/webp"
-_VARIANT_CACHE_CONTROL: str = "public, max-age=31536000, immutable"
+_VARIANT_CACHE_CONTROL: str = _MEDIA_CACHE_CONTROL
 
 
 def _variant_object_name(original_url: str, width: int) -> str:
@@ -232,6 +233,7 @@ class S3Storage(Storage):
                 Key=key,
                 Body=data,
                 ContentType=content_type,
+                CacheControl=_MEDIA_CACHE_CONTROL,
             )
         return self._public_url_for(key)
 
