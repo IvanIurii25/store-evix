@@ -21,12 +21,13 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.lang import normalize_lang
 from app.core.config import settings
 from app.core.email import send_restock_notification
 from app.models.catalog import Product, ProductTranslation
 from app.models.restock import STATUS_ACTIVE, RestockSubscription
 from app.repositories.restock_repo import RestockRepository
-from app.schemas.restock import RestockSubscriptionItem
+from app.schemas.restock import DemandItem, RestockSubscriptionItem
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,37 @@ class RestockService:
             int: The count of active subscriptions.
         """
         return await self.repo.count_active_for_product(product_id)
+
+    async def demand_overview(self, lang: str) -> list[DemandItem]:
+        """Return the admin restock-demand overview resolved in ``lang`` (§9).
+
+        Normalizes the language (falling back to the default for anything
+        unsupported), runs the single aggregate query and maps each row to a
+        :class:`DemandItem` (deriving ``in_stock`` and stringifying the price).
+
+        Args:
+            lang: Requested display language (query value, may be unsupported).
+
+        Returns:
+            list[DemandItem]: One item per product with active waiters, ordered
+            by waiter count descending.
+        """
+        rows = await self.repo.demand_overview(normalize_lang(lang))
+        return [
+            DemandItem.from_row(
+                product_id=row.product_id,
+                name=row.name,
+                slug=row.slug,
+                category=row.category_name,
+                qty=row.qty,
+                price=row.price,
+                is_active=row.is_active,
+                image_url=row.image_url,
+                waiters=row.waiters,
+                waiters_7d=row.waiters_7d,
+            )
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------ #
     # Notification (Celery task path, §4 / §7)

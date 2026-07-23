@@ -10,16 +10,33 @@ without an N+1; the account view (:meth:`list_active_for_user`) joins product +
 translation for name/slug in one round-trip.
 """
 
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import timedelta
 
-from app.models.catalog import Product, ProductTranslation
+from sqlalchemy import Row, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+
+from app.models.catalog import (
+    Category,
+    CategoryTranslation,
+    Media,
+    Product,
+    ProductTranslation,
+)
 from app.models.restock import (
     STATUS_ACTIVE,
     STATUS_NOTIFIED,
     RestockSubscription,
 )
 from app.models.user import AppUser
+
+# Momentum window for the demand overview: subscriptions created within this
+# many days count toward ``waiters_7d`` (§9).
+_MOMENTUM_DAYS: int = 7
+
+# Default language whose translation is coalesced onto rows missing the
+# requested-language translation (mirrors the cart/order name fallback, §2.1.1).
+_FALLBACK_LANG: str = "ro"
 
 
 class RestockRepository:
@@ -223,3 +240,94 @@ class RestockRepository:
             .distinct()
         )
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def demand_overview(self, lang: str) -> list[Row]:
+        """Return one aggregate row per product with active restock waiters (§9).
+
+        A single grouped query (no N+1): ``RestockSubscription`` filtered to
+        active rows, grouped by ``product_id``. Counts total waiters and the
+        7-day momentum (``FILTER (WHERE created_at > now() - interval '7 days')``).
+        Joined to :class:`Product` for stock/price/publication, to
+        :class:`ProductTranslation` for a localized name/slug (LEFT joins in the
+        requested ``lang`` then the fallback lang, coalesced — mirrors the cart
+        name fallback (§2.1.1) — with ``Product.code`` as the final name fallback
+        so a row always renders), to :class:`Category` +
+        :class:`CategoryTranslation` for the localized category name (LEFT, may be
+        ``None``), and a correlated scalar subquery for the first media URL
+        (ordered by ``position``, ``id``). Ordered by waiter count descending as a
+        sensible server default; the front-end re-sorts.
+
+        The result set is small (only products with at least one active waiter).
+
+        Args:
+            lang: Requested display language (validated / normalized by the caller).
+
+        Returns:
+            list[Row]: Rows with ``product_id, name, slug, category_name, qty,
+                price, is_active, image_url, waiters, waiters_7d``.
+        """
+        req = aliased(ProductTranslation)
+        dft = aliased(ProductTranslation)
+        cat_req = aliased(CategoryTranslation)
+        cat_dft = aliased(CategoryTranslation)
+        cutoff = func.now() - timedelta(days=_MOMENTUM_DAYS)
+
+        image_url = (
+            select(Media.url)
+            .where(Media.product_id == Product.id)
+            .order_by(Media.position, Media.id)
+            .limit(1)
+            .correlate(Product)
+            .scalar_subquery()
+        )
+
+        stmt = (
+            select(
+                RestockSubscription.product_id.label("product_id"),
+                func.coalesce(req.name, dft.name, Product.code).label("name"),
+                func.coalesce(req.slug, dft.slug).label("slug"),
+                func.coalesce(cat_req.name, cat_dft.name).label("category_name"),
+                Product.qty.label("qty"),
+                Product.price.label("price"),
+                Product.is_active.label("is_active"),
+                image_url.label("image_url"),
+                func.count().label("waiters"),
+                func.count()
+                .filter(RestockSubscription.created_at > cutoff)
+                .label("waiters_7d"),
+            )
+            .join(Product, Product.id == RestockSubscription.product_id)
+            .outerjoin(
+                req, (req.product_id == Product.id) & (req.lang == lang)
+            )
+            .outerjoin(
+                dft, (dft.product_id == Product.id) & (dft.lang == _FALLBACK_LANG)
+            )
+            .outerjoin(Category, Category.id == Product.category_id)
+            .outerjoin(
+                cat_req,
+                (cat_req.category_id == Category.id) & (cat_req.lang == lang),
+            )
+            .outerjoin(
+                cat_dft,
+                (cat_dft.category_id == Category.id)
+                & (cat_dft.lang == _FALLBACK_LANG),
+            )
+            .where(RestockSubscription.status == STATUS_ACTIVE)
+            .group_by(
+                RestockSubscription.product_id,
+                req.name,
+                dft.name,
+                req.slug,
+                dft.slug,
+                cat_req.name,
+                cat_dft.name,
+                Product.code,
+                Product.qty,
+                Product.price,
+                Product.is_active,
+                Product.id,
+            )
+            .order_by(func.count().desc())
+        )
+        return list((await self.session.execute(stmt)).all())

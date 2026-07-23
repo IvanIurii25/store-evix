@@ -49,7 +49,7 @@ from app.schemas.admin_catalog import (
     ProductTranslationOut,
     ProductUpdate,
 )
-from app.schemas.restock import RestockWaitersOut
+from app.schemas.restock import DemandItem, RestockWaitersOut
 from app.services.admin_catalog_service import (
     AdminCatalogService,
     AdminConflictError,
@@ -376,6 +376,22 @@ async def get_restock_waiters(
     """Return the number of active restock waiters for a product (demand, §9)."""
     count = await RestockService(session).waiter_count(product_id)
     return RestockWaitersOut(count=count)
+
+
+@router.get("/restock/demand", response_model=list[DemandItem])
+async def get_restock_demand(
+    _staff: AppUser = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Language code (ru|ro)."),
+) -> list[DemandItem]:
+    """Return the restock-demand overview: products people are waiting for (§9).
+
+    One aggregate row per product with active restock subscriptions, carrying the
+    waiter count and 7-day momentum plus enough catalog context (name, category,
+    stock, price, thumbnail) for the operator to decide what to restock. Ordered
+    by waiter count descending; the front-end re-sorts.
+    """
+    return await RestockService(session).demand_overview(lang)
 
 
 @router.patch("/products/{product_id}", response_model=ProductOut)
