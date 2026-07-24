@@ -82,9 +82,7 @@ async def test_demand_aggregate(
     # Product C: only a NOTIFIED sub -> must NOT appear.
     prod_c = await make_product(db_session, code="dem-c", qty=0, slug="gamma")
 
-    users = [
-        await _make_user(db_session, email=f"w{i}@example.com") for i in range(5)
-    ]
+    users = [await _make_user(db_session, email=f"w{i}@example.com") for i in range(5)]
 
     await _add_subscription(
         db_session, product_id=prod_a.id, user_id=users[0].id, created_at=now

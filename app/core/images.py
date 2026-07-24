@@ -171,8 +171,7 @@ def validate_and_build_variants(data: bytes) -> dict[int, bytes]:
 
     if width > MAX_UPLOAD_DIMENSION or height > MAX_UPLOAD_DIMENSION:
         raise ImageValidationError(
-            f"image dimension exceeds {MAX_UPLOAD_DIMENSION}px "
-            f"(got {width}x{height})"
+            f"image dimension exceeds {MAX_UPLOAD_DIMENSION}px (got {width}x{height})"
         )
 
     try:

@@ -26,6 +26,7 @@ def _png_bytes(width: int = 1000, height: int = 800) -> bytes:
     Image.new("RGB", (width, height), "red").save(buffer, format="PNG")
     return buffer.getvalue()
 
+
 _S3_ENDPOINT: str = "http://localhost:59000"
 _S3_ACCESS_KEY: str = "evixminio"
 _S3_SECRET_KEY: str = "evixminio-secret"

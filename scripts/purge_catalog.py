@@ -99,8 +99,10 @@ def main() -> int:
     if not CONFIRM:
         p = purge_products(c)
         cats = purge_categories(c)
-        print(f"[DRY] would delete ~{p} products (first page) + {cats} categories. "
-              f"Set CONFIRM=1 to execute.")
+        print(
+            f"[DRY] would delete ~{p} products (first page) + {cats} categories. "
+            f"Set CONFIRM=1 to execute."
+        )
         return 0
     prods = purge_products(c)
     cats = purge_categories(c)

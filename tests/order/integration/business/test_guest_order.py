@@ -192,7 +192,12 @@ async def test_order_snapshot_uses_requested_language(
 ) -> None:
     """Checkout with ``?lang=ru`` snapshots the RU line name; ``ro`` snapshots RO."""
     await _seed_guest_cart(
-        client, add_product, product_id=1, price=Decimal("100.00"), qty=1, name="Produs RO"
+        client,
+        add_product,
+        product_id=1,
+        price=Decimal("100.00"),
+        qty=1,
+        name="Produs RO",
     )
     await _add_ru_translation(db_session, 1, name="Товар RU")
 
@@ -217,7 +222,12 @@ async def test_order_snapshot_defaults_to_ro(
 ) -> None:
     """Checkout without ``?lang=`` snapshots the default (RO) line name (§2.6)."""
     await _seed_guest_cart(
-        client, add_product, product_id=1, price=Decimal("100.00"), qty=1, name="Produs RO"
+        client,
+        add_product,
+        product_id=1,
+        price=Decimal("100.00"),
+        qty=1,
+        name="Produs RO",
     )
     await _add_ru_translation(db_session, 1, name="Товар RU")
 

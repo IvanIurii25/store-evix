@@ -44,12 +44,8 @@ class ContentPage(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
-    is_published: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
-    show_in_footer: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )
+    is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    show_in_footer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     translations: Mapped[list["ContentPageTranslation"]] = relationship(

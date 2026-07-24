@@ -185,7 +185,9 @@ class Api:
     def create_value(self, attribute_id: int, value: str) -> int:
         if DRY_RUN:
             return self._next()
-        body = {"translations": [{"lang": lang, "value": value} for lang in ("ru", "ro")]}
+        body = {
+            "translations": [{"lang": lang, "value": value} for lang in ("ru", "ro")]
+        }
         r = self.c.post(f"/api/v1/admin/attributes/{attribute_id}/values", json=body)
         r.raise_for_status()
         return r.json()["id"]
@@ -238,14 +240,18 @@ class AttrRegistry:
 
     def __init__(self, api: Api) -> None:
         self.api = api
-        self.attr: dict[str, int] = {}          # code -> attribute id
+        self.attr: dict[str, int] = {}  # code -> attribute id
         self.val: dict[tuple[str, str], int] = {}  # (code, value_text) -> value id
         for a in api.list_attributes():
             code = a["code"]
             self.attr[code] = a["id"]
             for v in a.get("values", []):
                 name = next(
-                    (t["value"] for t in v.get("translations", []) if t["lang"] == "ru"),
+                    (
+                        t["value"]
+                        for t in v.get("translations", [])
+                        if t["lang"] == "ru"
+                    ),
                     None,
                 )
                 if name:
@@ -386,17 +392,21 @@ def main() -> int:
             api.activate(pid)
             done += 1
             if done % 25 == 0 or DRY_RUN:
-                print(f"  ✓ {slug} (id={pid}, {payload['price']} MDL, "
-                      f"{len(_gallery(pdir))} img, {len(value_ids)} attr-val)")
+                print(
+                    f"  ✓ {slug} (id={pid}, {payload['price']} MDL, "
+                    f"{len(_gallery(pdir))} img, {len(value_ids)} attr-val)"
+                )
         except httpx.HTTPStatusError as e:
             failed += 1
             print(f"  ! {slug}: {e.response.status_code} {e.response.text[:140]}")
         if not DRY_RUN:
             time.sleep(0.1)
 
-    print(f"\ndone={done} skipped={skipped} failed={failed} "
-          f"images={imgs} products_with_attrs={attrs}"
-          f"{'  [DRY_RUN]' if DRY_RUN else ''}")
+    print(
+        f"\ndone={done} skipped={skipped} failed={failed} "
+        f"images={imgs} products_with_attrs={attrs}"
+        f"{'  [DRY_RUN]' if DRY_RUN else ''}"
+    )
     return 0
 
 

@@ -297,9 +297,7 @@ class RestockRepository:
                 .label("waiters_7d"),
             )
             .join(Product, Product.id == RestockSubscription.product_id)
-            .outerjoin(
-                req, (req.product_id == Product.id) & (req.lang == lang)
-            )
+            .outerjoin(req, (req.product_id == Product.id) & (req.lang == lang))
             .outerjoin(
                 dft, (dft.product_id == Product.id) & (dft.lang == _FALLBACK_LANG)
             )
@@ -310,8 +308,7 @@ class RestockRepository:
             )
             .outerjoin(
                 cat_dft,
-                (cat_dft.category_id == Category.id)
-                & (cat_dft.lang == _FALLBACK_LANG),
+                (cat_dft.category_id == Category.id) & (cat_dft.lang == _FALLBACK_LANG),
             )
             .where(RestockSubscription.status == STATUS_ACTIVE)
             .group_by(

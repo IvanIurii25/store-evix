@@ -82,6 +82,8 @@ def _summary(scanned: int, updated: int, skipped: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="log without writing")
-    parser.add_argument("--limit", type=int, default=None, help="process first N objects")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="process first N objects"
+    )
     args = parser.parse_args()
     asyncio.run(main(dry_run=args.dry_run, limit=args.limit))

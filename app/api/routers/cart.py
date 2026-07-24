@@ -134,9 +134,7 @@ async def add_item(
         _set_session_cookie(response, token)
     service = CartService(session)
     try:
-        return await service.add_item(
-            user_id, token, data.product_id, data.qty, lang
-        )
+        return await service.add_item(user_id, token, data.product_id, data.qty, lang)
     except ProductNotAvailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -172,9 +170,7 @@ async def update_item(
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
     try:
-        return await service.update_item(
-            user_id, token, product_id, data.qty, lang
-        )
+        return await service.update_item(user_id, token, product_id, data.qty, lang)
     except ItemNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

@@ -65,8 +65,7 @@ class ContentPageService:
         """
         rows = await self.repo.list_published_footer(lang)
         return [
-            ContentPageListItem(slug=page.slug, title=tr.title)
-            for page, tr in rows
+            ContentPageListItem(slug=page.slug, title=tr.title) for page, tr in rows
         ]
 
     async def get_page(self, slug: str, lang: str) -> ContentPageDetail:

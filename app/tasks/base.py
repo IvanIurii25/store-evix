@@ -47,9 +47,7 @@ def run_async_session(op: Callable[[AsyncSession], Awaitable[T]]) -> T:
     async def _runner() -> T:
         engine = create_async_engine(settings.database_url, poolclass=NullPool)
         try:
-            maker = async_sessionmaker(
-                engine, expire_on_commit=False, autoflush=False
-            )
+            maker = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
             async with maker() as session:
                 return await op(session)
         finally:
