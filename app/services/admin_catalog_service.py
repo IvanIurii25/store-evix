@@ -903,6 +903,20 @@ class AdminCatalogService:
             raise AdminNotFoundError(f"Attribute {attribute_id} not found")
         return attribute
 
+    async def list_attributes(self) -> list[Attribute]:
+        """Return every attribute dictionary entry ordered by ``id``.
+
+        The full admin view (translations + values) is assembled per attribute by
+        the router via :meth:`get_attribute_detail`, which issues its own explicit
+        queries — so this method only needs the attribute rows and never triggers
+        an async lazy-load on the relations.
+
+        Returns:
+            list[Attribute]: All attributes, ordered by primary key.
+        """
+        stmt = select(Attribute).order_by(Attribute.id)
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def create_attribute(self, payload: AttributeCreate) -> Attribute:
         """Create an attribute dictionary entry with its translations.
 

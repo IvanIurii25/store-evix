@@ -24,6 +24,48 @@ from tests.admin_catalog._router_helpers import (
 
 pytestmark = pytest.mark.asyncio
 
+HTTP_UNAUTHORIZED: int = 401
+
+
+# --------------------------------------------------------------------------- #
+# Attributes: list
+# --------------------------------------------------------------------------- #
+class TestAttributeListHandler:
+    """The ``GET /admin/attributes`` listing handler and its staff guard."""
+
+    async def test_list_attributes_returns_translations_and_values(
+        self, client: AsyncClient
+    ) -> None:
+        # Arrange: two attributes, one carrying a value with translations.
+        first_id = await make_attribute(client, "size3")
+        second_id = await make_attribute(client, "color3")
+        await make_value(client, second_id)
+
+        # Act: list all attributes.
+        resp = await client.get(f"{ADMIN}/attributes")
+
+        # Assert: both attributes are present with translations, and the value
+        # of the second attribute is assembled with its translations.
+        assert resp.status_code == HTTP_OK, resp.text
+        by_id = {item["id"]: item for item in resp.json()}
+        assert {first_id, second_id} <= set(by_id)
+        first = by_id[first_id]
+        assert {tr["lang"] for tr in first["translations"]} == {"ru", "ro"}
+        second = by_id[second_id]
+        assert len(second["values"]) == 1
+        value_langs = {tr["lang"] for tr in second["values"][0]["translations"]}
+        assert value_langs == {"ru", "ro"}
+
+    async def test_list_attributes_requires_staff(
+        self, guest_client: AsyncClient
+    ) -> None:
+        # Act: hit the listing without an authenticated staff user.
+        resp = await guest_client.get(f"{ADMIN}/attributes")
+
+        # Assert: the guard blocks the request.
+        assert resp.status_code == HTTP_UNAUTHORIZED, resp.text
+        assert resp.json()["error"]["code"] == "http_error"
+
 
 # --------------------------------------------------------------------------- #
 # Attributes: update / delete

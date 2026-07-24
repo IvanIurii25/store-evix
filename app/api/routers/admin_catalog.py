@@ -548,6 +548,18 @@ async def delete_product_media(
 # --------------------------------------------------------------------------- #
 # Attributes + values
 # --------------------------------------------------------------------------- #
+@router.get("/attributes", response_model=list[AttributeOut])
+async def list_attributes(
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> list[AttributeOut]:
+    """Return every attribute with its translations and values (picker source)."""
+    attributes = await service.list_attributes()
+    return [
+        await _build_attribute_out(service, attribute) for attribute in attributes
+    ]
+
+
 @router.post(
     "/attributes",
     response_model=AttributeOut,
