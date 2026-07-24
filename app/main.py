@@ -31,6 +31,7 @@ from app.core.db import dispose_engine
 from app.core.errors import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.redis import close_redis
+from app.core.telegram import close_telegram
 
 API_V1_PREFIX = "/api/v1"
 
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await dispose_engine()
     await close_redis()
+    await close_telegram()
 
 
 def create_app() -> FastAPI:
