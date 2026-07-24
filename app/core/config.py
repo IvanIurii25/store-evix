@@ -106,6 +106,15 @@ class Settings(BaseSettings):
     rate_limit_track: str = "120/60"
     # Consent decisions are rare per visitor; a small per-IP budget is plenty.
     rate_limit_consent: str = "20/60"
+    # The public Telegram webhook: per-IP budget (only Telegram's IPs should hit it).
+    rate_limit_telegram: str = "60/60"
+
+    # Telegram helpdesk (support module). telegram_bot_token is from BotFather;
+    # empty in dev. telegram_webhook_secret is echoed by Telegram in the
+    # X-Telegram-Bot-Api-Secret-Token header — the webhook rejects requests whose
+    # header value does not match this setting.
+    telegram_bot_token: str = ""
+    telegram_webhook_secret: str = ""
 
     @property
     def cors_origins_list(self) -> list[str]:

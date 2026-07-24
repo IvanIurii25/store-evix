@@ -1,0 +1,129 @@
+"""Telegram-based helpdesk domain models (support module).
+
+A customer talks to the store over a Telegram bot; operators reply from the
+admin inbox. Each Telegram chat maps to exactly one :class:`SupportConversation`
+(the running thread + inbox metadata), and every individual message — inbound
+from the customer or outbound from an operator — is an append-only
+:class:`SupportMessage` row. Conversations are updated in place (status /
+unread_count / last_message_at), messages are never mutated after insert.
+
+Telegram chat/message ids can exceed int32, so those columns use ``BigInteger``.
+"""
+
+from datetime import datetime
+
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    func,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.models.base import Base
+
+# Conversation lifecycle: open (needs attention) → pending (operator waiting on
+# customer) → closed (resolved). Directions distinguish who sent a message;
+# delivery records the send result of outbound messages only.
+SUPPORT_STATUSES: tuple[str, ...] = ("open", "pending", "closed")
+SUPPORT_DIRECTIONS: tuple[str, ...] = (
+    "in",
+    "out",
+)  # in = from customer, out = from operator
+SUPPORT_DELIVERY: tuple[str, ...] = ("sent", "failed")  # outbound send result
+_STATUS_IN = ", ".join(f"'{s}'" for s in SUPPORT_STATUSES)
+_DIRECTION_IN = ", ".join(f"'{d}'" for d in SUPPORT_DIRECTIONS)
+_DELIVERY_IN = ", ".join(f"'{d}'" for d in SUPPORT_DELIVERY)
+
+
+class SupportConversation(Base):
+    """One Telegram chat = one support thread plus its inbox metadata."""
+
+    __tablename__ = "support_conversation"
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_STATUS_IN})", name="support_status_valid"),
+        # Inbox list: filter by status, order by most-recent activity.
+        Index("ix_support_conversation_status_last", "status", "last_message_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # The Telegram chat id — one conversation per chat, so unique.
+    tg_chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    # First+last name snapshot from Telegram (best-effort, may drift).
+    customer_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # @username snapshot; Telegram users may have no username.
+    customer_username: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Telegram language_code (ru/ro/…), best-effort.
+    lang: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        server_default=text("'open'"),
+    )
+    # Inbound messages the operators haven't seen yet.
+    unread_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("'0'"),
+    )
+    # Bumped on every message; drives inbox ordering.
+    last_message_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class SupportMessage(Base):
+    """One immutable message in a conversation (append-only thread)."""
+
+    __tablename__ = "support_message"
+    __table_args__ = (
+        CheckConstraint(
+            f"direction IN ({_DIRECTION_IN})", name="support_direction_valid"
+        ),
+        CheckConstraint(
+            f"delivery IS NULL OR delivery IN ({_DELIVERY_IN})",
+            name="support_delivery_valid",
+        ),
+        # Thread render: all messages of a conversation in chronological order.
+        Index(
+            "ix_support_message_conversation_created", "conversation_id", "created_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("support_conversation.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    direction: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(String, nullable=False)
+    # Telegram message id: set for inbound immediately, for outbound after send.
+    # Used to dedup inbound updates.
+    tg_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Operator who sent an outbound message; null for inbound. ON DELETE SET NULL
+    # so the thread survives an operator account being removed.
+    sender_staff_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("app_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Outbound send result ("sent"/"failed"); null for inbound.
+    delivery: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

@@ -15,6 +15,7 @@ from app.models import (
     promo,
     restock,
     settings,
+    support,
     user,
 )
 from app.models.base import Base
@@ -29,6 +30,7 @@ __all__ = [
     "promo",
     "restock",
     "settings",
+    "support",
     "analytics",
     "consent",
 ]
