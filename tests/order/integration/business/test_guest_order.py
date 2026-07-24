@@ -2,7 +2,7 @@
 
 Contract (§9, OrderOut):
 * Guest checkout (no token): ``email`` + ``phone`` required, order ``user_id``
-  null; lookup by ``GET /orders/{number}?email=`` — wrong email → 404.
+  null; lookup by ``POST /orders/{number}/lookup`` (email in body) — wrong email → 404.
 * COD: ``payment_method='cod'``, ``payment_status='pending'``, ``status='new'``;
   ``number`` matches ``^\\d{8}-\\d{6}$``.
 * Line snapshots are immutable: mutating ``product.price`` / name afterwards does
@@ -128,8 +128,8 @@ async def test_guest_lookup_by_correct_email(
     )
     number = created.json()["number"]
 
-    resp = await client.get(
-        f"/api/v1/orders/{number}", params={"email": "buyer@example.com"}
+    resp = await client.post(
+        f"/api/v1/orders/{number}/lookup", json={"email": "buyer@example.com"}
     )
 
     assert resp.status_code == 200, resp.text
@@ -160,8 +160,8 @@ async def test_guest_lookup_wrong_email_is_404(
     )
     number = created.json()["number"]
 
-    resp = await client.get(
-        f"/api/v1/orders/{number}", params={"email": "attacker@example.com"}
+    resp = await client.post(
+        f"/api/v1/orders/{number}/lookup", json={"email": "attacker@example.com"}
     )
 
     assert resp.status_code == 404, resp.text
@@ -280,8 +280,8 @@ async def test_snapshot_immutable_after_price_and_name_change(
     translation.name = "NewName"
     await db_session.flush()
 
-    resp = await client.get(
-        f"/api/v1/orders/{number}", params={"email": "snap@example.com"}
+    resp = await client.post(
+        f"/api/v1/orders/{number}/lookup", json={"email": "snap@example.com"}
     )
 
     assert resp.status_code == 200, resp.text

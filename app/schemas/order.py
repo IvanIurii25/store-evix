@@ -83,6 +83,18 @@ class QuoteOut(BaseModel):
     item_count: int
 
 
+class OrderLookupIn(BaseModel):
+    """Body of ``POST /orders/{number}/lookup`` — guest order lookup by email.
+
+    The email travels in the request body, never the URL, so it is not captured
+    in access logs or browser history (LP195/2024 — no personal data in URLs).
+    """
+
+    email: str = Field(
+        ..., min_length=3, description="Contact email of the guest order."
+    )
+
+
 class OrderItemOut(BaseModel):
     """One persisted order line with its name/price snapshot (§2.4)."""
 

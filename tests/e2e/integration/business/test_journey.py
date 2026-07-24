@@ -12,7 +12,7 @@ the rolled-back test session):
       -> GET  /cart        (live-priced)
       -> POST /checkout/quote   (COD, pickup)
       -> POST /checkout         (creates the order atomically)
-      -> GET  /orders/{number}?email=  (guest lookup)
+      -> POST /orders/{number}/lookup  (guest lookup, email in body)
 
 Assertions cover the order-number format (``YYYYMMDD-NNNNNN``), the price/name
 snapshot on the order line, and the initial COD status pair
@@ -213,15 +213,15 @@ async def test_guest_journey_catalog_to_order(
     assert Decimal(line["price_snapshot"]) == _PRICE
     assert line["qty"] == _QTY_ORDERED
 
-    # --- Order lookup: guest by number + email ---
-    lookup = await async_client.get(
-        f"{_API}/orders/{number}", params={"email": buyer_email}
+    # --- Order lookup: guest by number + email (email in body, not URL) ---
+    lookup = await async_client.post(
+        f"{_API}/orders/{number}/lookup", json={"email": buyer_email}
     )
     assert lookup.status_code == 200, lookup.text
     assert lookup.json()["number"] == number
 
     # Wrong email must not leak the order's existence (§9).
-    denied = await async_client.get(
-        f"{_API}/orders/{number}", params={"email": "someone-else@example.com"}
+    denied = await async_client.post(
+        f"{_API}/orders/{number}/lookup", json={"email": "someone-else@example.com"}
     )
     assert denied.status_code == 404

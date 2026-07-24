@@ -155,7 +155,9 @@ async def test_quote_does_not_create_order(client: AsyncClient, add_product) -> 
     await _seed_line(client, add_product, product_id=1, price="10.00", qty=1)
 
     await client.post(_QUOTE, json={"delivery_type": "pickup"})
-    orders = await client.get(f"{_ORDERS}/20260720-000001", params={"email": "x@x.io"})
+    orders = await client.post(
+        f"{_ORDERS}/20260720-000001/lookup", json={"email": "x@x.io"}
+    )
 
     # No order was persisted by the quote.
     assert orders.status_code == 404
@@ -353,19 +355,25 @@ async def test_guest_order_lookup_by_email(client: AsyncClient, add_product) -> 
     )
     number = created.json()["number"]
 
-    ok = await client.get(f"{_ORDERS}/{number}", params={"email": "guest@shop.io"})
+    ok = await client.post(
+        f"{_ORDERS}/{number}/lookup", json={"email": "guest@shop.io"}
+    )
     assert ok.status_code == 200
     assert ok.json()["number"] == number
 
     # Case-insensitive email match.
-    ci = await client.get(f"{_ORDERS}/{number}", params={"email": "GUEST@SHOP.IO"})
+    ci = await client.post(
+        f"{_ORDERS}/{number}/lookup", json={"email": "GUEST@SHOP.IO"}
+    )
     assert ci.status_code == 200
 
     # Wrong email → 404 (existence not leaked).
-    wrong = await client.get(f"{_ORDERS}/{number}", params={"email": "other@x.io"})
+    wrong = await client.post(
+        f"{_ORDERS}/{number}/lookup", json={"email": "other@x.io"}
+    )
     assert wrong.status_code == 404
 
-    # No email as a guest → 404.
+    # No email as a guest (plain GET) → 404.
     none = await client.get(f"{_ORDERS}/{number}")
     assert none.status_code == 404
 
