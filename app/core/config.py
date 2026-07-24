@@ -94,6 +94,8 @@ class Settings(BaseSettings):
     # Pageview tracking is one hit per navigation — a generous per-IP budget
     # that only trips on obvious floods (admin §6.3).
     rate_limit_track: str = "120/60"
+    # Consent decisions are rare per visitor; a small per-IP budget is plenty.
+    rate_limit_consent: str = "20/60"
 
     @property
     def cors_origins_list(self) -> list[str]:

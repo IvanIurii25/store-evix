@@ -18,6 +18,7 @@ from app.api.routers.auth import router as auth_router
 from app.api.routers.cart import router as cart_router
 from app.api.routers.catalog import router as catalog_router
 from app.api.routers.checkout import router as checkout_router
+from app.api.routers.consent import router as consent_router
 from app.api.routers.health import router as health_router
 from app.api.routers.orders import router as orders_router
 from app.api.routers.restock import router as restock_router
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_content_pages_router, prefix=API_V1_PREFIX)
     app.include_router(site_router, prefix=API_V1_PREFIX)
     app.include_router(track_router, prefix=API_V1_PREFIX)
+    app.include_router(consent_router, prefix=API_V1_PREFIX)
     app.include_router(restock_router, prefix=API_V1_PREFIX)
 
     # Serve admin-uploaded media locally in dev (§10; MinIO/S3 in prod — see README).

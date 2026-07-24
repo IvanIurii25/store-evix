@@ -9,6 +9,7 @@ from app.models import (
     analytics,
     cart,
     catalog,
+    consent,
     content_page,
     order,
     promo,
@@ -29,4 +30,5 @@ __all__ = [
     "restock",
     "settings",
     "analytics",
+    "consent",
 ]
