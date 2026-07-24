@@ -3,7 +3,7 @@
 The router carries no ``/api/v1`` prefix (mounted by ``main.py``).
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import current_user, get_auth_service
 from app.models.user import AppUser
@@ -34,6 +34,23 @@ async def update_me(
     """Apply a partial update to the authenticated user's profile."""
     updated = await service.update_me(user.id, data)
     return UserMe.model_validate(updated)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_me(
+    response: Response,
+    user: AppUser = Depends(current_user),
+    service: AuthService = Depends(get_auth_service),
+) -> None:
+    """Erase the authenticated user's account (right to erasure, Art.17).
+
+    Anonymizes the profile + deletes addresses/subscriptions/carts (orders are
+    kept for the fiscal obligation), then clears the auth cookies so the now
+    inactive session is dropped client-side.
+    """
+    await service.anonymize_account(user.id)
+    response.delete_cookie("access", path="/")
+    response.delete_cookie("refresh", path="/")
 
 
 @router.get("/me/addresses", response_model=list[AddressOut])

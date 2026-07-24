@@ -5,7 +5,7 @@ operate on an injected :class:`AsyncSession`; committing is the caller's
 (service's) responsibility so a service can group writes in one transaction.
 """
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Address, AppUser
@@ -95,3 +95,7 @@ class UserRepository:
         """Delete an address row."""
         await self.session.delete(address)
         await self.session.flush()
+
+    async def delete_all_addresses(self, user_id: int) -> None:
+        """Delete every address owned by ``user_id`` (account erasure, Art.17)."""
+        await self.session.execute(delete(Address).where(Address.user_id == user_id))

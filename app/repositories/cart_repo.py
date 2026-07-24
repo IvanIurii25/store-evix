@@ -263,3 +263,15 @@ class CartRepository:
         """
         stmt = delete(Cart).where(Cart.id == cart_id)
         await self.session.execute(stmt)
+
+    async def delete_all_for_user(self, user_id: int) -> None:
+        """Delete every cart (and its items) owned by ``user_id`` (Art.17).
+
+        Items are removed first — ``cart_item.cart_id`` has no ``ON DELETE
+        CASCADE`` — then the carts themselves.
+        """
+        user_carts = select(Cart.id).where(Cart.user_id == user_id)
+        await self.session.execute(
+            delete(CartItem).where(CartItem.cart_id.in_(user_carts))
+        )
+        await self.session.execute(delete(Cart).where(Cart.user_id == user_id))

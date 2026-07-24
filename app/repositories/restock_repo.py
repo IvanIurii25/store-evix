@@ -12,7 +12,7 @@ translation for name/slug in one round-trip.
 
 from datetime import timedelta
 
-from sqlalchemy import Row, func, select, update
+from sqlalchemy import Row, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -123,6 +123,12 @@ class RestockRepository:
         if subscription is not None:
             await self.session.delete(subscription)
             await self.session.flush()
+
+    async def delete_all_for_user(self, user_id: int) -> None:
+        """Delete every restock subscription owned by ``user_id`` (Art.17)."""
+        await self.session.execute(
+            delete(RestockSubscription).where(RestockSubscription.user_id == user_id)
+        )
 
     async def list_active_for_product(
         self,

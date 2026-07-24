@@ -11,6 +11,7 @@ Rules enforced here (not in routers, not in the repo):
 * Addresses: at most one ``is_default`` per user.
 """
 
+import secrets
 import time
 
 from fastapi import HTTPException, status
@@ -27,6 +28,8 @@ from app.core.security import (
     verify_password,
 )
 from app.models.user import Address, AppUser
+from app.repositories.cart_repo import CartRepository
+from app.repositories.restock_repo import RestockRepository
 from app.repositories.user_repo import UserRepository
 from app.schemas.auth import (
     AddressCreate,
@@ -255,6 +258,34 @@ class AuthService:
         """
         address = await self._get_owned_address(user_id, address_id)
         await self.repo.delete_address(address)
+        await self.session.commit()
+
+    async def anonymize_account(self, user_id: int) -> None:
+        """Erase a user account — right to erasure (LP195/2024 Art.17).
+
+        Scrubs the profile in place (email/phone → non-identifying placeholders,
+        password replaced by an unguessable random hash, account deactivated so
+        no existing session survives — ``current_user`` rejects inactive users)
+        and deletes the non-essential personal data: addresses, restock
+        subscriptions and carts. **Orders are kept** — their retention is a lawful
+        accounting/fiscal obligation (Art.17(3)(b)); the anonymized, inactive
+        account can no longer sign in to reach them.
+
+        Args:
+            user_id: The account to erase (the authenticated caller).
+        """
+        user = await self.repo.get_by_id(user_id)
+        if user is None:  # pragma: no cover - guarded by current_user
+            return
+        await self.repo.delete_all_addresses(user_id)
+        await RestockRepository(self.session).delete_all_for_user(user_id)
+        await CartRepository(self.session).delete_all_for_user(user_id)
+        user.email = f"deleted-{user.id}@anonymized.local"
+        user.phone = None
+        user.password_hash = hash_password(secrets.token_urlsafe(32))
+        user.is_active = False
+        user.is_staff = False
+        user.role = None
         await self.session.commit()
 
     async def _resolve_login_user(self, data: LoginRequest) -> AppUser | None:
