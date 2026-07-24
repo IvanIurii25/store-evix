@@ -176,6 +176,54 @@ class OrderRepository:
         return bool(result.rowcount)
 
     # ------------------------------------------------------------------ #
+    # Stock increment (return on cancel)
+    # ------------------------------------------------------------------ #
+    async def increment_stock(self, product_id: int, qty: int) -> bool:
+        """Atomically return stock to a product and report a 0 → >0 crossing (§8).
+
+        Mirror of :meth:`decrement_stock` for the cancel path: runs
+        ``UPDATE product SET qty = qty + :n WHERE id = :id`` (no ``qty >= :n``
+        guard — a return is always valid). Before the update it reads the current
+        stock so it can report whether the product was at zero, i.e. this return
+        crosses ``0 → >0`` and should trigger a restock notification.
+
+        Args:
+            product_id: Catalog product id to credit.
+            qty: Quantity to add back to stock.
+
+        Returns:
+            bool: ``True`` if the product was at ``qty == 0`` before the increment
+                (so it just crossed back into stock), else ``False``. A missing
+                product row (no rowcount) also yields ``False``.
+        """
+        before = await self.session.scalar(
+            select(Product.qty).where(Product.id == product_id)
+        )
+        stmt = (
+            update(Product)
+            .where(Product.id == product_id)
+            .values(qty=Product.qty + qty)
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.rowcount) and before == 0
+
+    async def get_items_for_order(self, order_id: int) -> list[OrderItem]:
+        """Return one order's lines (ordered by id) for the stock-return effect.
+
+        Args:
+            order_id: Order id.
+
+        Returns:
+            list[OrderItem]: The order's lines (empty if none).
+        """
+        stmt = (
+            select(OrderItem)
+            .where(OrderItem.order_id == order_id)
+            .order_by(OrderItem.id)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    # ------------------------------------------------------------------ #
     # Order persistence
     # ------------------------------------------------------------------ #
     def add_order(

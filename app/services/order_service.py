@@ -159,9 +159,15 @@ class OrderService:
     ) -> Callable[[], Coroutine[Any, Any, None]]:
         """Build the post-commit stock-return side effect for a canceled order.
 
-        v1 keeps this a logged stub: real inventory return on cancel is wired in
-        with the admin transition flow (§8). Kept out of the transaction body so
-        a failing side effect never rolls back a committed status change.
+        Returns every line's quantity to inventory via the repository's atomic
+        :meth:`~app.repositories.order_repo.OrderRepository.increment_stock`, and
+        for any product that thereby crosses ``0 → >0`` enqueues the restock
+        notification (reusing the ``restock.notify`` Celery task, §3/§8). The
+        whole closure is wrapped in ``try/except`` and kept out of the
+        transaction body so a failing side effect never rolls back an
+        already-committed status change (mirrors the checkout confirmation-email
+        side effect). Cancel is terminal (``canceled`` has no outgoing moves), so
+        this can only run once per order — no separate idempotency guard needed.
 
         Args:
             order_id: The canceled order id.
@@ -171,6 +177,51 @@ class OrderService:
         """
 
         async def _run() -> None:
-            logger.info("order %s canceled: stock-return side effect (stub)", order_id)
+            try:
+                items = await self.repo.get_items_for_order(order_id)
+                returned_lines = 0
+                returned_units = 0
+                for item in items:
+                    if item.product_id is None:
+                        continue
+                    crossed_zero = await self.repo.increment_stock(
+                        item.product_id, item.qty
+                    )
+                    returned_lines += 1
+                    returned_units += item.qty
+                    if crossed_zero:
+                        self._notify_restocked(item.product_id)
+                await self.session.commit()
+                logger.info(
+                    "order %s canceled: returned %s unit(s) across %s line(s)",
+                    order_id,
+                    returned_units,
+                    returned_lines,
+                )
+            except Exception:  # noqa: BLE001 — side effect must not break cancel
+                logger.exception(
+                    "order %s canceled: stock-return side effect failed", order_id
+                )
 
         return _run
+
+    @staticmethod
+    def _notify_restocked(product_id: int) -> None:
+        """Enqueue the restock task for a product that crossed ``0 → >0`` (§3).
+
+        Reuses the same ``restock.notify`` Celery task as
+        :meth:`~app.services.admin_catalog_service.AdminCatalogService._notify_if_restocked`;
+        the task is imported lazily to avoid an import cycle. Enqueue failures are
+        swallowed and logged so a broker outage cannot break a committed cancel.
+
+        Args:
+            product_id: The product that returned to stock on cancel.
+        """
+        try:
+            from app.tasks.restock import send_restock_notifications
+
+            send_restock_notifications.delay(product_id)
+        except Exception:  # noqa: BLE001 — enqueue must not fail the cancel
+            logger.exception(
+                "restock: failed to enqueue notification for product %s", product_id
+            )
