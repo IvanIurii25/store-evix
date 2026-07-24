@@ -1,7 +1,5 @@
 # evix-store (backend)
 
-[![CI](https://github.com/IvanIurii25/store-evix/actions/workflows/ci.yml/badge.svg)](https://github.com/IvanIurii25/store-evix/actions/workflows/ci.yml)
-
 Single-tenant e-commerce core — **storefront + back-office**, feature-complete and
 MVP-hardened. FastAPI + async SQLAlchemy 2.0.
 
