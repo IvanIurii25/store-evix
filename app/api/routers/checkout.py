@@ -27,6 +27,7 @@ from app.models.user import AppUser
 from app.schemas.order import CheckoutRequest, OrderOut, QuoteOut, QuoteRequest
 from app.services.checkout_service import (
     CheckoutService,
+    DeliveryAddressForbiddenError,
     DeliveryAddressRequiredError,
     EmptyCartError,
     OutOfStockError,
@@ -96,7 +97,8 @@ async def quote(
         QuoteOut: The subtotal / discount / delivery / total breakdown.
 
     Raises:
-        HTTPException: 400 for an empty cart; 422 for courier without an address.
+        HTTPException: 400 for an empty cart; 422 for courier without an address;
+            403 for a ``delivery_address_id`` the caller does not own.
     """
     user_id, token = _caller_identity(request, user)
     service = CheckoutService(session)
@@ -112,6 +114,10 @@ async def quote(
     except EmptyCartError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except DeliveryAddressForbiddenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
     except DeliveryAddressRequiredError as exc:
         raise HTTPException(
@@ -148,7 +154,8 @@ async def checkout(
             envelope when stock is insufficient.
 
     Raises:
-        HTTPException: 400 empty cart; 422 courier without an address.
+        HTTPException: 400 empty cart; 422 courier without an address; 403 for a
+            ``delivery_address_id`` the caller does not own.
     """
     user_id, token = _caller_identity(request, user)
     service = CheckoutService(session)
@@ -166,6 +173,10 @@ async def checkout(
     except EmptyCartError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except DeliveryAddressForbiddenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
     except DeliveryAddressRequiredError as exc:
         raise HTTPException(

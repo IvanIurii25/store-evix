@@ -24,7 +24,9 @@ from app.core.config import settings
 from app.core.email import send_order_confirmation
 from app.models.cart import Cart
 from app.models.order import Order, OrderItem
+from app.models.user import Address
 from app.repositories.order_repo import NAME_LANG, OrderRepository
+from app.repositories.user_repo import UserRepository
 from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,24 @@ class EmptyCartError(CheckoutError):
 
 class DeliveryAddressRequiredError(CheckoutError):
     """Courier delivery was requested without a ``delivery_address_id`` (§9.4)."""
+
+
+class DeliveryAddressForbiddenError(CheckoutError):
+    """A ``delivery_address_id`` was supplied that the caller may not use.
+
+    Raised when the id resolves to no address the caller owns — the address is
+    missing, belongs to another user, or the caller is a guest (guests have no
+    saved addresses). Mapped to HTTP 403; existence is never leaked (the same
+    error covers "not found" and "not yours").
+    """
+
+
+# A resolved courier snapshot: ``(name, city, street, zip)``. All ``None`` when
+# no address applies (e.g. pickup, or courier with no supplied address).
+_DeliverySnapshot = tuple[str | None, str | None, str | None, str | None]
+
+# The empty snapshot (pickup, or courier without any address).
+_EMPTY_SNAPSHOT: _DeliverySnapshot = (None, None, None, None)
 
 
 class OutOfStockError(CheckoutError):
@@ -89,6 +109,7 @@ class CheckoutService:
         """
         self.session = session
         self.repo = OrderRepository(session)
+        self.user_repo = UserRepository(session)
 
     # ------------------------------------------------------------------ #
     # Quote (idempotent predraft — no order created)
@@ -120,8 +141,16 @@ class CheckoutService:
         Raises:
             EmptyCartError: If the caller has no purchasable lines.
             DeliveryAddressRequiredError: If courier is chosen without an address.
+            DeliveryAddressForbiddenError: If ``delivery_address_id`` is not one
+                the caller owns (validated up front so the caller is not made to
+                submit before learning the id is unusable).
         """
         _cart, lines = await self._load_cart_lines(user_id, session_token, lang)
+        # Validate ownership even though the delivery cost is owner-independent:
+        # a foreign id must not even be quotable.
+        await self._resolve_delivery_snapshot(
+            user_id, delivery_type, delivery_address_id, delivery_address
+        )
         return self._quote_from_lines(
             lines, delivery_type, delivery_address_id, delivery_address
         )
@@ -165,9 +194,16 @@ class CheckoutService:
         Raises:
             EmptyCartError: If the caller has no purchasable lines.
             DeliveryAddressRequiredError: If courier is chosen without an address.
+            DeliveryAddressForbiddenError: If ``delivery_address_id`` is not one
+                the caller owns.
             OutOfStockError: If any line's stock is insufficient at commit time.
         """
         cart, lines = await self._load_cart_lines(user_id, session_token, lang)
+        snap_name, snap_city, snap_street, snap_zip = (
+            await self._resolve_delivery_snapshot(
+                user_id, delivery_type, delivery_address_id, delivery_address
+            )
+        )
         totals = self._quote_from_lines(
             lines, delivery_type, delivery_address_id, delivery_address
         )
@@ -184,10 +220,10 @@ class CheckoutService:
             total=totals.total,
             delivery_type=delivery_type,
             delivery_address_id=delivery_address_id,
-            delivery_name=delivery_address.full_name if delivery_address else None,
-            delivery_city=delivery_address.city if delivery_address else None,
-            delivery_street=delivery_address.street if delivery_address else None,
-            delivery_zip=delivery_address.zip if delivery_address else None,
+            delivery_name=snap_name,
+            delivery_city=snap_city,
+            delivery_street=snap_street,
+            delivery_zip=snap_zip,
         )
         await self.session.flush()  # assign order.id
         # Pull DB-side ``created_at`` (server_default) onto the instance so the
@@ -277,6 +313,80 @@ class CheckoutService:
         if not priced:
             raise EmptyCartError("Cart has no purchasable items")
         return cart, priced
+
+    async def _resolve_delivery_snapshot(
+        self,
+        user_id: int | None,
+        delivery_type: str,
+        delivery_address_id: int | None,
+        delivery_address: DeliveryAddressIn | None,
+    ) -> _DeliverySnapshot:
+        """Resolve + validate the courier snapshot for the delivery choice (§9.4).
+
+        Single source of truth for "what address does this order use", reused by
+        both :meth:`quote` and :meth:`checkout` so they agree. A saved
+        ``delivery_address_id`` takes precedence over an inline ``delivery_address``
+        for a logged-in user (the saved, ownership-validated address is
+        authoritative); a guest's inline path is untouched.
+
+        Args:
+            user_id: Owning user id, or ``None`` for a guest.
+            delivery_type: ``pickup`` or ``courier``.
+            delivery_address_id: Saved address id (courier; logged-in users).
+            delivery_address: Inline courier address (guest or user).
+
+        Returns:
+            _DeliverySnapshot: ``(name, city, street, zip)`` for the order, all
+                ``None`` when no address applies (pickup, or courier resolved
+                from an inline-only address handled by the caller's fallback).
+
+        Raises:
+            DeliveryAddressForbiddenError: If ``delivery_address_id`` is supplied
+                but resolves to no address the caller owns (missing, foreign, or
+                guest). Existence is not leaked.
+        """
+        if delivery_type == PICKUP or delivery_address_id is None:
+            if delivery_address is not None:
+                return (
+                    delivery_address.full_name,
+                    delivery_address.city,
+                    delivery_address.street,
+                    delivery_address.zip,
+                )
+            return _EMPTY_SNAPSHOT
+
+        address = await self._load_owned_address(user_id, delivery_address_id)
+        return (address.full_name, address.city, address.street, address.zip)
+
+    async def _load_owned_address(
+        self,
+        user_id: int | None,
+        delivery_address_id: int,
+    ) -> Address:
+        """Load an address the caller owns, or raise (§9.4 ownership guard).
+
+        Args:
+            user_id: Owning user id, or ``None`` for a guest (always rejected —
+                guests have no saved addresses).
+            delivery_address_id: The requested saved-address id.
+
+        Returns:
+            Address: The address owned by ``user_id``.
+
+        Raises:
+            DeliveryAddressForbiddenError: If the caller is a guest, or the id
+                resolves to no address owned by ``user_id``.
+        """
+        if user_id is None:
+            raise DeliveryAddressForbiddenError(
+                "Delivery address is not available to this caller"
+            )
+        address = await self.user_repo.get_address(user_id, delivery_address_id)
+        if address is None:
+            raise DeliveryAddressForbiddenError(
+                "Delivery address is not available to this caller"
+            )
+        return address
 
     def _quote_from_lines(
         self,

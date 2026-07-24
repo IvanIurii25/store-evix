@@ -59,12 +59,20 @@ async def test_quote_pickup_is_free(client: AsyncClient, add_product) -> None:
 
 
 async def test_quote_courier_adds_flat_rate(client: AsyncClient, add_product) -> None:
-    # courier_rate default is 50 (config §2.6).
+    # courier_rate default is 50 (config §2.6). A guest quotes with an inline
+    # address (a guest may not use a saved ``delivery_address_id``).
     await _seed_line(client, add_product, product_id=1, price="100.00", qty=1)
 
     resp = await client.post(
         _QUOTE,
-        json={"delivery_type": "courier", "delivery_address_id": 5},
+        json={
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
     )
 
     assert resp.status_code == 200, resp.text
@@ -307,9 +315,14 @@ async def test_checkout_user_courier_and_lookup(
         },
     )
     assert resp.status_code == 201, resp.text
-    number = resp.json()["number"]
-    assert Decimal(resp.json()["delivery_cost"]) == Decimal("50")
-    assert resp.json()["delivery_address_id"] == 42
+    body = resp.json()
+    number = body["number"]
+    assert Decimal(body["delivery_cost"]) == Decimal("50")
+    assert body["delivery_address_id"] == 42
+    # The saved address is snapshotted onto the order (add_address defaults).
+    assert body["delivery_name"] == "Test Buyer"
+    assert body["delivery_city"] == "Chisinau"
+    assert body["delivery_street"] == "Str. 1"
 
     # GET /orders lists the user's order.
     listing = await user_client.get(_ORDERS)
@@ -355,3 +368,101 @@ async def test_guest_order_lookup_by_email(client: AsyncClient, add_product) -> 
     # No email as a guest → 404.
     none = await client.get(f"{_ORDERS}/{number}")
     assert none.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Checkout — saved-address ownership (delivery_address_id)
+# --------------------------------------------------------------------------- #
+async def test_checkout_user_own_address_fills_snapshot(
+    user_client: AsyncClient, add_product, add_address
+) -> None:
+    """A user's own saved ``delivery_address_id`` snapshots onto the order."""
+    await add_product(1, price=Decimal("100.00"), code="OWN-1", qty=10)
+    await add_address(55)
+    added = await user_client.post(_CART_ITEMS, json={"product_id": 1, "qty": 1})
+    assert added.status_code == 201
+
+    resp = await user_client.post(
+        _CHECKOUT,
+        json={
+            "email": "checkout-user@example.com",
+            "phone": "+3730",
+            "delivery_type": "courier",
+            "delivery_address_id": 55,
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["delivery_address_id"] == 55
+    assert body["delivery_name"] == "Test Buyer"
+    assert body["delivery_city"] == "Chisinau"
+    assert body["delivery_street"] == "Str. 1"
+    assert body["delivery_zip"] is None
+
+
+async def test_checkout_user_foreign_address_403(
+    user_client: AsyncClient, add_product, add_address, other_user
+) -> None:
+    """A saved address owned by another user is rejected; no order is created."""
+    await add_product(1, price=Decimal("100.00"), code="FOR-1", qty=10)
+    # Address 77 belongs to a different user, not the authenticated test user.
+    await add_address(77, user_id=9999)
+    added = await user_client.post(_CART_ITEMS, json={"product_id": 1, "qty": 1})
+    assert added.status_code == 201
+
+    resp = await user_client.post(
+        _CHECKOUT,
+        json={
+            "email": "checkout-user@example.com",
+            "phone": "+3730",
+            "delivery_type": "courier",
+            "delivery_address_id": 77,
+        },
+    )
+    assert resp.status_code == 403, resp.text
+
+    # The cart is untouched (no order was created) → a pickup checkout succeeds.
+    retry = await user_client.post(
+        _CHECKOUT,
+        json={
+            "email": "checkout-user@example.com",
+            "phone": "+3730",
+            "delivery_type": "pickup",
+        },
+    )
+    assert retry.status_code == 201, retry.text
+
+
+async def test_checkout_guest_saved_address_id_403(
+    client: AsyncClient, add_product
+) -> None:
+    """A guest cannot use a saved ``delivery_address_id`` (guests have none)."""
+    await _seed_line(client, add_product, product_id=1, price="100.00", qty=1)
+
+    resp = await client.post(
+        _CHECKOUT,
+        json={
+            "email": "guest@example.com",
+            "phone": "+37360000000",
+            "delivery_type": "courier",
+            "delivery_address_id": 5,
+        },
+    )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_quote_foreign_address_403(
+    user_client: AsyncClient, add_product, add_address, other_user
+) -> None:
+    """Quote validates ownership up front — a foreign id is not quotable."""
+    await add_product(1, price=Decimal("100.00"), code="QF-1", qty=10)
+    await add_address(88, user_id=9999)
+    added = await user_client.post(_CART_ITEMS, json={"product_id": 1, "qty": 1})
+    assert added.status_code == 201
+
+    resp = await user_client.post(
+        _QUOTE,
+        json={"delivery_type": "courier", "delivery_address_id": 88},
+    )
+    assert resp.status_code == 403, resp.text

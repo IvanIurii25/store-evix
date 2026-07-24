@@ -78,7 +78,14 @@ async def test_courier_delivery_charges_courier_rate(
 
     resp = await client.post(
         "/api/v1/checkout/quote",
-        json={"delivery_type": "courier", "delivery_address_id": 1},
+        json={
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
     )
 
     assert resp.status_code == 200, resp.text
@@ -104,7 +111,14 @@ async def test_courier_free_over_threshold(
 
     resp = await client.post(
         "/api/v1/checkout/quote",
-        json={"delivery_type": "courier", "delivery_address_id": 1},
+        json={
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
     )
 
     assert resp.status_code == 200, resp.text
@@ -128,7 +142,14 @@ async def test_courier_exactly_at_threshold_is_free(
 
     resp = await client.post(
         "/api/v1/checkout/quote",
-        json={"delivery_type": "courier", "delivery_address_id": 1},
+        json={
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
     )
 
     assert resp.status_code == 200, resp.text
@@ -149,7 +170,14 @@ async def test_courier_just_below_threshold_charged(
 
     resp = await client.post(
         "/api/v1/checkout/quote",
-        json={"delivery_type": "courier", "delivery_address_id": 1},
+        json={
+            "delivery_type": "courier",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
     )
 
     assert resp.status_code == 200, resp.text

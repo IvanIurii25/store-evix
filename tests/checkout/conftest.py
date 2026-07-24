@@ -59,6 +59,9 @@ def _override_rate_limit_redis(app: FastAPI) -> None:
 # Fixed id for the overridden authenticated test user.
 TEST_USER_ID: int = 7001
 
+# Fixed id for a second, unrelated user (owns "foreign" saved addresses).
+OTHER_USER_ID: int = 9999
+
 
 def _build_app(db_session: AsyncSession) -> FastAPI:
     """Assemble a minimal app mounting cart + checkout + orders routers."""
@@ -121,8 +124,28 @@ async def user_client(
 
 
 @pytest_asyncio.fixture
-async def add_address(db_session: AsyncSession):
-    """Return a helper inserting an :class:`Address` for the courier path."""
+async def other_user(db_session: AsyncSession) -> AppUser:
+    """Persist a second, unrelated user (owner of "foreign" addresses)."""
+    user = AppUser(
+        id=OTHER_USER_ID,
+        email="other-user@example.com",
+        password_hash="x",
+        is_active=True,
+        is_staff=False,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+@pytest_asyncio.fixture
+async def add_address(db_session: AsyncSession, test_user: AppUser):
+    """Return a helper inserting an :class:`Address` for the courier path.
+
+    Depends on ``test_user`` so the default owner exists; a foreign ``user_id``
+    (e.g. :data:`OTHER_USER_ID`) requires the caller to also request the
+    ``other_user`` fixture so its ``app_user`` row exists (FK).
+    """
 
     async def _add(address_id: int, *, user_id: int = TEST_USER_ID) -> Address:
         address = Address(
