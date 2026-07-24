@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user, guest_or_user
+from app.core.config import settings
 from app.core.db import get_session
 from app.models.user import AppUser
 from app.schemas.cart import AddItem, CartOut, UpdateItem
@@ -69,6 +70,7 @@ def _set_session_cookie(response: Response, token: UUID) -> None:
         value=str(token),
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )
 

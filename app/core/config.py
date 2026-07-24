@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "INFO"
 
+    @property
+    def cookie_secure(self) -> bool:
+        """Mark client cookies ``Secure`` everywhere except local/test.
+
+        Production is served over HTTPS (Cloudflare), so session/consent cookies
+        must carry ``Secure``; a plain-HTTP local dev server would otherwise drop
+        them. Mirrors the JWT-cookie posture (§7).
+        """
+        return self.app_env not in ("local", "test")
+
     # Database (asyncpg driver required, e.g. postgresql+asyncpg://user:pass@host/db)
     database_url: str = "postgresql+asyncpg://evix:evix@localhost:5432/evix_store"
 
