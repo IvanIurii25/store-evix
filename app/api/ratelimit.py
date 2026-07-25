@@ -3,8 +3,8 @@
 A single :func:`rate_limiter` factory builds a FastAPI dependency from a setting
 string of the form ``"<count>/<window_seconds>"`` (e.g. ``"5/60"``) and a
 ``bucket`` label. The dependency keys the counter by the caller's client IP
-(honouring ``X-Forwarded-For`` when present) plus the bucket, so different
-endpoints and different clients never share a window.
+(the Cloudflare-set ``CF-Connecting-IP``, un-spoofable at the edge) plus the
+bucket, so different endpoints and different clients never share a window.
 
 The window is a plain ``INCR`` on a per-window key; ``EXPIRE`` is applied only on
 the first hit (when the counter is created) so the window advances in fixed steps
@@ -21,7 +21,7 @@ from redis.asyncio import Redis
 from app.core.redis import get_redis
 
 _KEY_PREFIX = "ratelimit"
-_FORWARDED_FOR_HEADER = "X-Forwarded-For"
+_CF_CONNECTING_IP_HEADER = "CF-Connecting-IP"
 _UNKNOWN_CLIENT = "unknown"
 
 
@@ -48,7 +48,17 @@ def _parse_limit(limit_setting: str) -> tuple[int, int]:
 
 
 def _client_ip(request: Request) -> str:
-    """Resolve the caller's IP, preferring the first ``X-Forwarded-For`` hop.
+    """Resolve the caller's IP for rate-limit keying, via ``CF-Connecting-IP``.
+
+    Behind the Cloudflare Tunnel, ``CF-Connecting-IP`` is the authoritative
+    client IP: Cloudflare sets it at the edge from the real connection and
+    overwrites any client-supplied value, so it cannot be spoofed.
+    ``X-Forwarded-For`` is deliberately **not** trusted — Cloudflare appends the
+    real IP but leaves any client-supplied first hop in place, so keying on it
+    would let a caller rotate a forged hop and bypass the limit entirely.
+
+    Falls back to the direct connection peer (local dev / tests with no
+    Cloudflare header), then to a sentinel when no source is available.
 
     Args:
         request: The incoming request.
@@ -56,11 +66,11 @@ def _client_ip(request: Request) -> str:
     Returns:
         str: The client IP, or ``"unknown"`` when no source is available.
     """
-    forwarded = request.headers.get(_FORWARDED_FOR_HEADER)
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
+    cf_ip = request.headers.get(_CF_CONNECTING_IP_HEADER)
+    if cf_ip:
+        cf_ip = cf_ip.strip()
+        if cf_ip:
+            return cf_ip
     if request.client and request.client.host:
         return request.client.host
     return _UNKNOWN_CLIENT

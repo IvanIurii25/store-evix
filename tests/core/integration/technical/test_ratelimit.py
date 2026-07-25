@@ -46,34 +46,49 @@ class TestRateLimitParse:
 
 
 class TestRateLimitClientIp:
-    """``_client_ip`` — forwarded-for precedence and fallbacks."""
+    """``_client_ip`` — CF-Connecting-IP precedence and fallbacks."""
 
-    def test_client_ip_uses_first_forwarded_hop(self):
-        # Arrange: a request with a multi-hop X-Forwarded-For header.
-        request = build_request(headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"})
+    def test_client_ip_uses_cf_connecting_ip(self):
+        # Arrange: a request carrying the Cloudflare-set client IP.
+        request = build_request(headers={"CF-Connecting-IP": "203.0.113.7"})
 
         # Act.
         resolved = _client_ip(request)
 
-        # Assert: the first (client) hop wins.
-        assert resolved == "203.0.113.7", "the first forwarded hop must be used"
+        # Assert: the Cloudflare-authoritative IP is used.
+        assert resolved == "203.0.113.7", "CF-Connecting-IP must be used"
 
-    def test_client_ip_blank_forwarded_falls_back_to_peer(self):
-        # Arrange: an empty forwarded value + a real peer client.
+    def test_client_ip_ignores_forwarded_for(self):
+        # Arrange: only a (spoofable) X-Forwarded-For, plus a real peer client.
         request = build_request(
-            headers={"X-Forwarded-For": "   "}, client=("198.51.100.9", 5000)
+            headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"},
+            client=("198.51.100.9", 5000),
         )
 
         # Act.
         resolved = _client_ip(request)
 
-        # Assert: a blank forwarded hop falls back to the connection peer.
+        # Assert: XFF is not trusted — the connection peer wins instead.
         assert resolved == "198.51.100.9", (
-            "a blank forwarded hop must fall back to peer"
+            "X-Forwarded-For must not be trusted for rate-limit keying"
+        )
+
+    def test_client_ip_blank_cf_header_falls_back_to_peer(self):
+        # Arrange: an empty CF-Connecting-IP value + a real peer client.
+        request = build_request(
+            headers={"CF-Connecting-IP": "   "}, client=("198.51.100.9", 5000)
+        )
+
+        # Act.
+        resolved = _client_ip(request)
+
+        # Assert: a blank CF header falls back to the connection peer.
+        assert resolved == "198.51.100.9", (
+            "a blank CF-Connecting-IP must fall back to peer"
         )
 
     def test_client_ip_no_source_returns_unknown(self):
-        # Arrange: no forwarded header and no client on the scope.
+        # Arrange: no CF header and no client on the scope.
         request = build_request(client=None)
 
         # Act.
@@ -91,7 +106,7 @@ class TestRateLimitDependency:
     async def test_dependency_allows_calls_within_budget(self, redis_client):
         # Arrange: a 2/60 limiter dependency and a fixed-IP request.
         dependency = rate_limiter(_LIMIT_SETTING, _BUCKET)
-        request = build_request(headers={"X-Forwarded-For": "192.0.2.1"})
+        request = build_request(headers={"CF-Connecting-IP": "192.0.2.1"})
 
         # Act / Assert: the first two calls (== budget) do not raise.
         await dependency(request, redis_client)
@@ -100,7 +115,7 @@ class TestRateLimitDependency:
     async def test_dependency_blocks_call_over_budget_with_429(self, redis_client):
         # Arrange: same 2/60 limiter, three calls from one IP.
         dependency = rate_limiter(_LIMIT_SETTING, _BUCKET)
-        request = build_request(headers={"X-Forwarded-For": "192.0.2.2"})
+        request = build_request(headers={"CF-Connecting-IP": "192.0.2.2"})
         await dependency(request, redis_client)
         await dependency(request, redis_client)
 

@@ -52,11 +52,11 @@ async def _post(
     path: str,
     body: dict,
     *,
-    forwarded_for: str,
+    client_ip: str,
 ) -> int:
     """POST ``body`` to ``path`` as a fixed client IP; return the status code."""
     resp = await client.post(
-        path, json=body, headers={"X-Forwarded-For": forwarded_for}
+        path, json=body, headers={"CF-Connecting-IP": client_ip}
     )
     return resp.status_code
 
@@ -73,10 +73,10 @@ async def test_limit_allows_up_to_n_then_rejects(
     """First ``limit`` requests pass the limiter; the next is ``429 rate_limited``."""
     ip = "203.0.113.10"
     for _ in range(limit):
-        status_code = await _post(client, path, body, forwarded_for=ip)
+        status_code = await _post(client, path, body, client_ip=ip)
         assert status_code != _RATE_LIMITED
 
-    resp = await client.post(path, json=body, headers={"X-Forwarded-For": ip})
+    resp = await client.post(path, json=body, headers={"CF-Connecting-IP": ip})
     assert resp.status_code == _RATE_LIMITED
     assert resp.json()["error"]["code"] == "rate_limited"
 
@@ -95,11 +95,11 @@ async def test_distinct_ips_have_independent_windows(
     ip_cold = "203.0.113.21"
 
     for _ in range(limit):
-        assert await _post(client, path, body, forwarded_for=ip_hot) != _RATE_LIMITED
-    assert await _post(client, path, body, forwarded_for=ip_hot) == _RATE_LIMITED
+        assert await _post(client, path, body, client_ip=ip_hot) != _RATE_LIMITED
+    assert await _post(client, path, body, client_ip=ip_hot) == _RATE_LIMITED
 
     # A separate IP starts from an empty window.
-    assert await _post(client, path, body, forwarded_for=ip_cold) != _RATE_LIMITED
+    assert await _post(client, path, body, client_ip=ip_cold) != _RATE_LIMITED
 
 
 @pytest.mark.asyncio
@@ -117,20 +117,20 @@ async def test_window_reset_lets_caller_through_again(
     key = f"ratelimit:{bucket}:{ip}"
 
     for _ in range(limit):
-        assert await _post(client, path, body, forwarded_for=ip) != _RATE_LIMITED
-    assert await _post(client, path, body, forwarded_for=ip) == _RATE_LIMITED
+        assert await _post(client, path, body, client_ip=ip) != _RATE_LIMITED
+    assert await _post(client, path, body, client_ip=ip) == _RATE_LIMITED
 
     # Simulate the fixed window elapsing without real waiting.
     await redis_client.delete(key)
 
-    assert await _post(client, path, body, forwarded_for=ip) != _RATE_LIMITED
+    assert await _post(client, path, body, client_ip=ip) != _RATE_LIMITED
 
 
 @pytest.mark.asyncio
 async def test_login_and_checkout_buckets_are_isolated(client: AsyncClient) -> None:
     """Exhausting the login window does not consume the checkout budget."""
     ip = "203.0.113.40"
-    headers = {"X-Forwarded-For": ip}
+    headers = {"CF-Connecting-IP": ip}
 
     for _ in range(_LOGIN_LIMIT):
         await client.post(_LOGIN_PATH, json=_LOGIN_BODY, headers=headers)
