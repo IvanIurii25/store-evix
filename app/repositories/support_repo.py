@@ -353,6 +353,54 @@ class SupportRepository:
         result = await self.session.execute(stmt)
         return result.rowcount
 
+    async def attachment_keys_for_conversation(
+        self,
+        conversation_id: int,
+    ) -> list[str]:
+        """Return the stored object keys of a conversation's attachments.
+
+        Collected before erasure so the caller can remove the files from object
+        storage after the rows are deleted (the FK cascade only drops the DB
+        rows, never the stored bytes).
+
+        Args:
+            conversation_id: The owning conversation's primary key.
+
+        Returns:
+            list[str]: Every non-NULL ``attachment_key`` of the conversation's
+            messages (empty when it has no stored attachments).
+        """
+        stmt = select(SupportMessage.attachment_key).where(
+            SupportMessage.conversation_id == conversation_id,
+            SupportMessage.attachment_key.is_not(None),
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def attachment_keys_stale(self, cutoff: datetime) -> list[str]:
+        """Return the stored object keys of stale conversations' attachments.
+
+        Mirrors :meth:`delete_stale`'s selection (conversations whose
+        ``last_message_at`` is strictly before ``cutoff``) so the keys match the
+        rows about to be purged. Collected before the delete so the caller can
+        remove the files from object storage afterwards.
+
+        Args:
+            cutoff: Conversations whose ``last_message_at`` is strictly before
+                this instant are considered stale (the retention boundary).
+
+        Returns:
+            list[str]: Every non-NULL ``attachment_key`` of messages belonging to
+            stale conversations (empty when none have stored attachments).
+        """
+        stale_ids = select(SupportConversation.id).where(
+            SupportConversation.last_message_at < cutoff
+        )
+        stmt = select(SupportMessage.attachment_key).where(
+            SupportMessage.conversation_id.in_(stale_ids),
+            SupportMessage.attachment_key.is_not(None),
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def delete_conversation(self, conversation_id: int) -> bool:
         """Delete one conversation by primary key (messages cascade).
 

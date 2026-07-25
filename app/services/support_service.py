@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.core.telegram as telegram_client
 from app.core.config import settings
+from app.core.storage import get_storage
 from app.core.support_events import publish_support_event
 from app.core.telegram import InboundMessage
 from app.models.order import Order
@@ -526,8 +527,10 @@ class SupportService:
             int: The number of conversations deleted.
         """
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        keys = await self.repo.attachment_keys_stale(cutoff)
         deleted = await self.repo.delete_stale(cutoff)
         await self.session.commit()
+        await self._remove_attachment_keys(keys)
         logger.info("support: purged %s stale conversations", deleted)
         return deleted
 
@@ -544,12 +547,32 @@ class SupportService:
         Raises:
             ConversationNotFoundError: If the conversation does not exist.
         """
+        keys = await self.repo.attachment_keys_for_conversation(conversation_id)
         deleted = await self.repo.delete_conversation(conversation_id)
         if not deleted:
             raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
         await self.session.commit()
+        await self._remove_attachment_keys(keys)
         if self.redis is not None:
             await publish_support_event(self.redis, conversation_id, "status")
+
+    async def _remove_attachment_keys(self, keys: list[str]) -> None:
+        """Best-effort removal of stored attachment objects (privacy erasure).
+
+        Removes each object key from storage so an erased/purged conversation
+        leaves no orphaned customer files (LP195/2024 Art.5/Art.17).
+        ``remove_key`` is idempotent, and one storage failure must never abort
+        erasure — a failing key is logged and the loop continues.
+
+        Args:
+            keys: The stored object keys to delete (empty is a no-op).
+        """
+        storage = get_storage()
+        for key in keys:
+            try:
+                await storage.remove_key(key)
+            except Exception:  # noqa: BLE001 — a storage failure must not block erasure
+                logger.exception("support: failed to remove attachment key %s", key)
 
     async def list_conversations(
         self,
