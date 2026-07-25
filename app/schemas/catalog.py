@@ -140,6 +140,13 @@ class ProductDetail(BaseModel):
     # storefront decides whether to surface it (shows only above a threshold);
     # the backend always returns the true count (0 when none).
     in_cart_count: int = 0
+    # Approved-review rating summary for the PDP star widget + JSON-LD
+    # aggregateRating (Reviews & Ratings §3). ``rating_avg`` is rounded to one
+    # decimal and is ``None`` when the product has no approved reviews (then
+    # ``rating_count`` is ``0``). Computed on the detail only (never on listings,
+    # for performance) and additive to the existing contract.
+    rating_avg: float | None = None
+    rating_count: int = 0
     category_id: int
     breadcrumbs: list[Breadcrumb] = Field(default_factory=list)
     attributes: list[AttributeGroup] = Field(default_factory=list)

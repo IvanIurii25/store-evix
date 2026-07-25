@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import ALLOWED_LANGS, ProductCard
 from app.repositories.catalog_repo import CatalogRepository
+from app.repositories.review_repo import ReviewRepository
 from app.schemas.catalog import (
     AttributeGroup,
     Breadcrumb,
@@ -480,6 +481,9 @@ class CatalogService:
         if category is not None:
             breadcrumbs = await self._build_breadcrumbs(category.path, lang)
         in_cart_count = await self.repo.count_live_carts_with_product(product.id)
+        rating_avg, rating_count = await ReviewRepository(
+            self.session
+        ).aggregate_for_product(product.id)
 
         return ProductDetail(
             id=product.id,
@@ -493,6 +497,8 @@ class CatalogService:
             old_price=product.old_price,
             in_stock=product.qty > 0,
             in_cart_count=in_cart_count,
+            rating_avg=round(rating_avg, 1) if rating_avg is not None else None,
+            rating_count=rating_count,
             category_id=product.category_id,
             breadcrumbs=breadcrumbs,
             attributes=attributes,

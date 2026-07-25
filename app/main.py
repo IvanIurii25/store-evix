@@ -14,6 +14,7 @@ from app.api.routers.admin_customers import router as admin_customers_router
 from app.api.routers.admin_dashboard import router as admin_dashboard_router
 from app.api.routers.admin_orders import router as admin_orders_router
 from app.api.routers.admin_promo import router as admin_promo_router
+from app.api.routers.admin_reviews import router as admin_reviews_router
 from app.api.routers.admin_settings import router as admin_settings_router
 from app.api.routers.admin_support import router as admin_support_router
 from app.api.routers.auth import router as auth_router
@@ -24,6 +25,7 @@ from app.api.routers.consent import router as consent_router
 from app.api.routers.health import router as health_router
 from app.api.routers.orders import router as orders_router
 from app.api.routers.restock import router as restock_router
+from app.api.routers.reviews import router as reviews_router
 from app.api.routers.search import router as search_router
 from app.api.routers.site import router as site_router
 from app.api.routers.telegram import router as telegram_router
@@ -112,6 +114,8 @@ def create_app() -> FastAPI:
     app.include_router(telegram_router, prefix=API_V1_PREFIX)
     app.include_router(consent_router, prefix=API_V1_PREFIX)
     app.include_router(restock_router, prefix=API_V1_PREFIX)
+    app.include_router(reviews_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_reviews_router, prefix=API_V1_PREFIX)
 
     # Serve admin-uploaded media locally in dev (§10; MinIO/S3 in prod — see README).
     media_dir = Path(settings.media_root)
