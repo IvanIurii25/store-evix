@@ -439,6 +439,7 @@ class AdminCatalogService:
             await self.catalog.rebuild_cards([product.id])
         await self.session.commit()
         await self.session.refresh(product)
+        self._enqueue_es_reindex([product.id])
         return product
 
     def _add_product_translation(
@@ -501,6 +502,7 @@ class AdminCatalogService:
         # defensively wrapped — a broker hiccup must never fail a committed
         # product update.
         self._notify_if_restocked(product.id, old_qty, product.qty)
+        self._enqueue_es_reindex([product.id])
         return product
 
     @staticmethod
@@ -527,6 +529,31 @@ class AdminCatalogService:
                 "restock: failed to enqueue notification for product %s", product_id
             )
 
+    @staticmethod
+    def _enqueue_es_reindex(product_ids: list[int]) -> None:
+        """Enqueue an ES re-index of changed products (search freshness hook).
+
+        Post-commit, lazily imported and swallowed — mirrors ``_notify_if_restocked``.
+        The task itself no-ops under the Postgres backend, so this is safe to call
+        unconditionally; a broker outage must never fail a committed product write.
+        """
+        try:
+            from app.tasks.es_sync import index_products
+
+            index_products.delay(product_ids)
+        except Exception:  # noqa: BLE001 — enqueue must not fail the product write
+            logger.exception("es: failed to enqueue reindex for %s", product_ids)
+
+    @staticmethod
+    def _enqueue_es_delete(product_ids: list[int]) -> None:
+        """Enqueue removal of deleted products from the ES index (post-commit)."""
+        try:
+            from app.tasks.es_sync import delete_products
+
+            delete_products.delay(product_ids)
+        except Exception:  # noqa: BLE001 — enqueue must not fail the product write
+            logger.exception("es: failed to enqueue delete for %s", product_ids)
+
     async def delete_product(self, product_id: int) -> None:
         """Delete a product with its translations, media, attributes and cards.
 
@@ -550,6 +577,7 @@ class AdminCatalogService:
         await self.catalog.repo.delete_product_cards(product_id)
         await self.session.delete(product)
         await self.session.commit()
+        self._enqueue_es_delete([product_id])
 
     async def set_product_translation(
         self,
@@ -592,6 +620,7 @@ class AdminCatalogService:
         await self.catalog.rebuild_cards([product_id])
         await self.session.commit()
         await self.session.refresh(translation)
+        self._enqueue_es_reindex([product_id])
         return translation
 
     async def set_product_attributes(
@@ -636,6 +665,7 @@ class AdminCatalogService:
         for value_id in unique_ids:
             self.session.add(ProductAttribute(product_id=product_id, value_id=value_id))
         await self.session.commit()
+        self._enqueue_es_reindex([product_id])
         return unique_ids
 
     async def add_product_media(

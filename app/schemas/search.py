@@ -41,6 +41,9 @@ class SearchResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    # Autocomplete suggestions from the ES completion suggester (empty on the
+    # Postgres FTS path, which has no suggester). Additive to the §4 contract.
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class FacetValue(BaseModel):

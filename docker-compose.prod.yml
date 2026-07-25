@@ -39,6 +39,38 @@ services:
       timeout: 5s
       retries: 10
 
+  # Elasticsearch — search index (ported ecom-elastic V3 algorithm). Single-node,
+  # security OFF (never published to host — internal compose network only). No
+  # plugins needed: the V3 analyzers do keyboard-layout/transliteration via
+  # char_filter `mapping`, not ICU. Small catalog → 512m heap is plenty.
+  # Host prereq: `sysctl -w vm.max_map_count=262144` (else ES 8 refuses to boot).
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      xpack.security.http.ssl.enabled: 'false'
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      bootstrap.memory_lock: 'true'
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    mem_limit: 1400m
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "curl -fs http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"' || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
   minio:
     image: minio/minio:latest
     restart: unless-stopped
@@ -98,6 +130,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      elasticsearch:
+        condition: service_started
     environment: &app_env
       APP_ENV: production
       LOG_LEVEL: INFO
@@ -107,6 +141,14 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # Search: `elastic` uses the ES backend, `postgres` uses the native FTS.
+      # Keep `postgres` until the first `es_reindex_all` has populated the index,
+      # then set SEARCH_BACKEND=elastic in .env and restart app. ES down at
+      # runtime → automatic fallback to Postgres FTS regardless of this flag.
+      SEARCH_BACKEND: ${SEARCH_BACKEND:-postgres}
+      ELASTIC_URL: http://elasticsearch:9200
+      ELASTIC_INDEX: evix_products
+      ELASTIC_MIN_SCORE: ${ELASTIC_MIN_SCORE:-0}
       JWT_SECRET: ${JWT_SECRET:?set in .env}
       CORS_ALLOW_ORIGINS: https://shop.evix.md
       STORAGE_BACKEND: s3
@@ -177,6 +219,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      elasticsearch:
+        condition: service_started
     environment:
       <<: *app_env
     command:
@@ -275,3 +319,4 @@ volumes:
   pgdata:
   redisdata:
   miniodata:
+  esdata:

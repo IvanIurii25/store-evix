@@ -19,7 +19,12 @@ celery_app = Celery(
     "evix",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.health", "app.tasks.restock", "app.tasks.support"],
+    include=[
+        "app.tasks.health",
+        "app.tasks.restock",
+        "app.tasks.support",
+        "app.tasks.es_sync",
+    ],
 )
 """The shared Celery app. Import this in task modules to register tasks and in
 the worker CLI (``celery -A app.core.celery_app``)."""
@@ -57,6 +62,14 @@ celery_app.conf.update(
         },
         "support-purge-stale": {
             "task": "support.purge_stale",
+            "schedule": 86400.0,  # daily
+        },
+        # Nightly ES reconciliation: rebuilds the whole index so it can never
+        # drift from Postgres (the incremental write-hook is the fast path). Self
+        # no-ops if the ES backend is off — the task recreates+refills regardless
+        # of the flag, but a stale index under the Postgres backend is harmless.
+        "search-reindex-nightly": {
+            "task": "search.reindex_all",
             "schedule": 86400.0,  # daily
         },
     },

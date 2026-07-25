@@ -57,6 +57,27 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:56379/1"
     celery_result_backend: str = "redis://localhost:56379/1"
 
+    # Search backend (ported ecom-elastic V3). ``elastic`` routes queries to
+    # Elasticsearch; ``postgres`` uses the native FTS (``search_repo``). ES down
+    # at runtime → the service falls back to Postgres regardless of this flag, so
+    # a broken/empty index never takes search down. Flip to ``elastic`` only
+    # after the first ``es_reindex_all`` has populated the index.
+    search_backend: str = "postgres"  # elastic | postgres
+    elastic_url: str = "http://localhost:9200"
+    elastic_index: str = "evix_products"
+    # Relevance floor (ES ``min_score``). 0 = no floor. Tune per catalog; the V3
+    # service used 50, but that assumed a priority/keywords field mix we don't
+    # index, so we start at 0 and raise it once the score distribution is known.
+    elastic_min_score: float = 0.0
+    # Hard cap on one ES round-trip (seconds) — a stalled ES must not hang the
+    # request; on timeout the service falls back to Postgres FTS.
+    elastic_request_timeout: float = 5.0
+
+    @property
+    def search_uses_elastic(self) -> bool:
+        """True when the ES backend is selected (runtime health checked separately)."""
+        return self.search_backend.strip().lower() == "elastic"
+
     # Store config (§2.6): single-tenant → app config, not a DB singleton.
     currency: str = "MDL"  # one fixed currency; no currency column in DB
     default_lang: str = "ro"  # ru | ro

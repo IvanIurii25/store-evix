@@ -7,8 +7,11 @@ pagination over ranked results, hydration of matched products from the
 this service knows nothing about HTTP and raises domain errors the router maps.
 """
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.repositories.search_repo import SearchRepository
 from app.schemas.catalog import ProductCardOut
 from app.schemas.search import (
@@ -18,6 +21,8 @@ from app.schemas.search import (
     SearchHit,
     SearchResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 # Page size for search results (classic page pagination — §4).
 DEFAULT_SEARCH_PAGE_SIZE: int = 24
@@ -77,11 +82,65 @@ class SearchService:
         if not normalized:
             return SearchResponse(data=[], total=0, page=safe_page, page_size=safe_size)
 
-        ranked = await self.repo.search_product_ids(normalized, lang)
+        # Elasticsearch backend when selected AND reachable; a failed ES round-trip
+        # (down, timeout, empty index error) transparently falls back to Postgres
+        # FTS so search never goes dark on an ES incident (plan §3/§8).
+        if settings.search_uses_elastic:
+            try:
+                return await self._search_elastic(
+                    normalized, lang, safe_page, safe_size
+                )
+            except Exception as exc:  # noqa: BLE001 — any ES failure → fallback
+                logger.warning(
+                    "es_search_failed query=%r err=%s — falling back to postgres",
+                    normalized,
+                    exc,
+                )
+
+        return await self._search_postgres(normalized, lang, safe_page, safe_size)
+
+    async def _search_elastic(
+        self, query: str, lang: str, page: int, page_size: int
+    ) -> SearchResponse:
+        """ES-backed page: rank ids in ES, hydrate cards from ``product_card``.
+
+        ES does its own ``from/size`` pagination and returns the page's ranked
+        ids + the total; hydration reuses the same ``load_cards`` path as the
+        Postgres branch, so the card contract is identical.
+        """
+        from app.search.es.backend import EsSearchBackend
+
+        result = await EsSearchBackend().search(
+            query, page=page, page_size=page_size
+        )
+        page_ids = [pid for pid, _ in result.hits]
+        cards = await self.repo.load_cards(page_ids, lang)
+        hits: list[SearchHit] = []
+        for pid, score in result.hits:
+            card = cards.get(pid)
+            if card is None:
+                # Ranked in ES but no card row in this lang (inactive / not
+                # published) — skip rather than surface a half-hydrated hit.
+                continue
+            hits.append(SearchHit(card=ProductCardOut.model_validate(card), rank=score))
+
+        return SearchResponse(
+            data=hits,
+            total=result.total,
+            page=page,
+            page_size=page_size,
+            suggestions=result.suggestions,
+        )
+
+    async def _search_postgres(
+        self, query: str, lang: str, page: int, page_size: int
+    ) -> SearchResponse:
+        """Native Postgres FTS page (the original path; also the ES fallback)."""
+        ranked = await self.repo.search_product_ids(query, lang)
         total = len(ranked)
 
-        start = (safe_page - 1) * safe_size
-        page_slice = ranked[start : start + safe_size]
+        start = (page - 1) * page_size
+        page_slice = ranked[start : start + page_size]
         page_ids = [product_id for product_id, _ in page_slice]
 
         cards = await self.repo.load_cards(page_ids, lang)
@@ -95,7 +154,7 @@ class SearchService:
             hits.append(SearchHit(card=ProductCardOut.model_validate(card), rank=rank))
 
         return SearchResponse(
-            data=hits, total=total, page=safe_page, page_size=safe_size
+            data=hits, total=total, page=page, page_size=page_size
         )
 
     # ------------------------------------------------------------------ #
