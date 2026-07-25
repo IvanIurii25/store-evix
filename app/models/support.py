@@ -36,9 +36,12 @@ SUPPORT_DIRECTIONS: tuple[str, ...] = (
     "out",
 )  # in = from customer, out = from operator
 SUPPORT_DELIVERY: tuple[str, ...] = ("sent", "failed")  # outbound send result
+# Canned reply templates are authored per storefront language (ro/ru).
+CANNED_LANGS: tuple[str, ...] = ("ro", "ru")
 _STATUS_IN = ", ".join(f"'{s}'" for s in SUPPORT_STATUSES)
 _DIRECTION_IN = ", ".join(f"'{d}'" for d in SUPPORT_DIRECTIONS)
 _DELIVERY_IN = ", ".join(f"'{d}'" for d in SUPPORT_DELIVERY)
+_CANNED_LANG_IN = ", ".join(f"'{lang}'" for lang in CANNED_LANGS)
 
 
 class SupportConversation(Base):
@@ -122,6 +125,37 @@ class SupportMessage(Base):
     )
     # Outbound send result ("sent"/"failed"); null for inbound.
     delivery: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class SupportCannedResponse(Base):
+    """A reusable per-language reply template operators insert into a reply."""
+
+    __tablename__ = "support_canned_response"
+    __table_args__ = (
+        CheckConstraint(f"lang IN ({_CANNED_LANG_IN})", name="canned_lang_valid"),
+        # Ordered per-language picker: filter by lang, order by sort_order.
+        Index("ix_support_canned_lang_sort", "lang", "sort_order"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # Short label shown in the operator's canned-response picker.
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    # Storefront language the template is authored in (ro/ru).
+    lang: Mapped[str] = mapped_column(String, nullable=False)
+    # Manual ordering within a language (ascending). Declared before the ``text``
+    # column so the ``text()`` construct is not shadowed by that column name.
+    sort_order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("'0'"),
+    )
+    # The reply body inserted into the reply box.
+    text: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

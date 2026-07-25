@@ -32,6 +32,8 @@ from app.core.redis import get_redis
 from app.core.support_events import subscribe_support_events
 from app.models.user import AppUser
 from app.schemas.support import (
+    CannedIn,
+    CannedOut,
     ConversationList,
     ConversationOut,
     MessageOut,
@@ -39,7 +41,12 @@ from app.schemas.support import (
     StatusIn,
     ThreadOut,
 )
-from app.services.support_service import ConversationNotFoundError, SupportService
+from app.services.support_service import (
+    CannedNotFoundError,
+    ConversationNotFoundError,
+    SupportCannedService,
+    SupportService,
+)
 
 router = APIRouter(
     prefix="/admin/support",
@@ -268,6 +275,101 @@ async def delete_conversation(
     try:
         await svc.delete_conversation(conversation_id)
     except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.get("/canned", response_model=list[CannedOut])
+async def list_canned(
+    lang: str | None = Query(
+        default=None,
+        description="Exact template-language filter (ro/ru).",
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> list[CannedOut]:
+    """Return canned reply templates, optionally filtered by language.
+
+    Args:
+        lang: Optional exact template-language filter.
+        session: Injected async DB session.
+
+    Returns:
+        list[CannedOut]: The templates, ordered for the picker.
+    """
+    rows = await SupportCannedService(session).list_canned(lang)
+    return [CannedOut.model_validate(c) for c in rows]
+
+
+@router.post(
+    "/canned",
+    response_model=CannedOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_canned(
+    payload: CannedIn,
+    session: AsyncSession = Depends(get_session),
+) -> CannedOut:
+    """Create a canned reply template.
+
+    Args:
+        payload: The validated template body.
+        session: Injected async DB session.
+
+    Returns:
+        CannedOut: The persisted template.
+    """
+    canned = await SupportCannedService(session).create_canned(payload)
+    return CannedOut.model_validate(canned)
+
+
+@router.patch("/canned/{canned_id}", response_model=CannedOut)
+async def update_canned(
+    canned_id: int,
+    payload: CannedIn,
+    session: AsyncSession = Depends(get_session),
+) -> CannedOut:
+    """Update a canned reply template.
+
+    Args:
+        canned_id: The template's primary key.
+        payload: The validated template body.
+        session: Injected async DB session.
+
+    Returns:
+        CannedOut: The updated template.
+
+    Raises:
+        HTTPException: 404 if the template does not exist.
+    """
+    try:
+        canned = await SupportCannedService(session).update_canned(canned_id, payload)
+    except CannedNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return CannedOut.model_validate(canned)
+
+
+@router.delete("/canned/{canned_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_canned(
+    canned_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Delete a canned reply template.
+
+    Args:
+        canned_id: The template's primary key.
+        session: Injected async DB session.
+
+    Raises:
+        HTTPException: 404 if the template does not exist.
+    """
+    try:
+        await SupportCannedService(session).delete_canned(canned_id)
+    except CannedNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": exc.code, "message": str(exc)},

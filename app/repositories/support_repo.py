@@ -15,7 +15,11 @@ from datetime import datetime
 from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.support import SupportConversation, SupportMessage
+from app.models.support import (
+    SupportCannedResponse,
+    SupportConversation,
+    SupportMessage,
+)
 
 
 class SupportRepository:
@@ -338,3 +342,124 @@ class SupportRepository:
         conversation.last_message_at = func.now()
         if inbound:
             conversation.unread_count = conversation.unread_count + 1
+
+
+class SupportCannedRepository:
+    """Read/write queries for canned reply templates, bound to one session."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Store the session used by every query method.
+
+        Args:
+            session: Active async session (request-scoped or test-scoped).
+        """
+        self.session = session
+
+    async def list(self, *, lang: str | None) -> list[SupportCannedResponse]:
+        """Return canned responses, ordered for the picker.
+
+        Args:
+            lang: Exact language to filter by, or ``None`` for all languages.
+
+        Returns:
+            list[SupportCannedResponse]: The templates, ordered by
+            ``sort_order`` then ``id``.
+        """
+        stmt = select(SupportCannedResponse)
+        if lang is not None:
+            stmt = stmt.where(SupportCannedResponse.lang == lang)
+        stmt = stmt.order_by(
+            SupportCannedResponse.sort_order.asc(),
+            SupportCannedResponse.id.asc(),
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get(self, canned_id: int) -> SupportCannedResponse | None:
+        """Return a canned response by primary key, or ``None``.
+
+        Args:
+            canned_id: The template's primary key.
+
+        Returns:
+            SupportCannedResponse | None: The matching template, if any.
+        """
+        stmt = select(SupportCannedResponse).where(
+            SupportCannedResponse.id == canned_id
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        title: str,
+        text: str,
+        lang: str,
+        sort_order: int,
+    ) -> SupportCannedResponse:
+        """Insert a new canned response and return it flushed.
+
+        Args:
+            title: Short picker label.
+            text: The reply body.
+            lang: The template language.
+            sort_order: Manual ordering within the language.
+
+        Returns:
+            SupportCannedResponse: The persisted template with its id.
+        """
+        canned = SupportCannedResponse(
+            title=title,
+            text=text,
+            lang=lang,
+            sort_order=sort_order,
+        )
+        self.session.add(canned)
+        await self.session.flush()
+        return canned
+
+    async def update(
+        self,
+        canned_id: int,
+        *,
+        title: str,
+        text: str,
+        lang: str,
+        sort_order: int,
+    ) -> SupportCannedResponse | None:
+        """Update a canned response in place and return it flushed.
+
+        Args:
+            canned_id: The template's primary key.
+            title: Short picker label.
+            text: The reply body.
+            lang: The template language.
+            sort_order: Manual ordering within the language.
+
+        Returns:
+            SupportCannedResponse | None: The updated template, or ``None`` if it
+            does not exist.
+        """
+        canned = await self.get(canned_id)
+        if canned is None:
+            return None
+        canned.title = title
+        canned.text = text
+        canned.lang = lang
+        canned.sort_order = sort_order
+        await self.session.flush()
+        return canned
+
+    async def delete(self, canned_id: int) -> bool:
+        """Delete one canned response by primary key.
+
+        Args:
+            canned_id: The template's primary key.
+
+        Returns:
+            bool: ``True`` if a template was deleted, ``False`` if none matched.
+        """
+        stmt = delete(SupportCannedResponse).where(
+            SupportCannedResponse.id == canned_id
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount > 0

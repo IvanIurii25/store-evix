@@ -28,9 +28,14 @@ import app.core.telegram as telegram_client
 from app.core.config import settings
 from app.core.support_events import publish_support_event
 from app.core.telegram import InboundMessage
-from app.models.support import SupportConversation, SupportMessage
+from app.models.support import (
+    SupportCannedResponse,
+    SupportConversation,
+    SupportMessage,
+)
 from app.repositories.catalog_repo import CatalogRepository
-from app.repositories.support_repo import SupportRepository
+from app.repositories.support_repo import SupportCannedRepository, SupportRepository
+from app.schemas.support import CannedIn
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,12 @@ class SupportError(Exception):
 
 class ConversationNotFoundError(SupportError):
     """The referenced conversation does not exist."""
+
+    code = "not_found"
+
+
+class CannedNotFoundError(SupportError):
+    """The referenced canned response does not exist."""
 
     code = "not_found"
 
@@ -423,4 +434,91 @@ class SupportService:
             conversation_id: The conversation's primary key.
         """
         await self.repo.mark_read(conversation_id)
+        await self.session.commit()
+
+
+class SupportCannedService:
+    """Canned reply-template CRUD bound to one session (commits its writes)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind the service to its session.
+
+        Args:
+            session: Active async session used for all reads and writes.
+        """
+        self.session = session
+        self.repo = SupportCannedRepository(session)
+
+    async def list_canned(self, lang: str | None) -> list[SupportCannedResponse]:
+        """Return canned responses, optionally filtered by language.
+
+        Args:
+            lang: Exact language to filter by, or ``None`` for all languages.
+
+        Returns:
+            list[SupportCannedResponse]: The templates, ordered for the picker.
+        """
+        return await self.repo.list(lang=lang)
+
+    async def create_canned(self, data: CannedIn) -> SupportCannedResponse:
+        """Create a canned response and commit it.
+
+        Args:
+            data: The validated template payload.
+
+        Returns:
+            SupportCannedResponse: The persisted template.
+        """
+        canned = await self.repo.create(
+            title=data.title,
+            text=data.text,
+            lang=data.lang,
+            sort_order=data.sort_order,
+        )
+        await self.session.commit()
+        await self.session.refresh(canned)
+        return canned
+
+    async def update_canned(
+        self,
+        canned_id: int,
+        data: CannedIn,
+    ) -> SupportCannedResponse:
+        """Update a canned response and commit it.
+
+        Args:
+            canned_id: The template's primary key.
+            data: The validated template payload.
+
+        Returns:
+            SupportCannedResponse: The updated template.
+
+        Raises:
+            CannedNotFoundError: If the template does not exist.
+        """
+        canned = await self.repo.update(
+            canned_id,
+            title=data.title,
+            text=data.text,
+            lang=data.lang,
+            sort_order=data.sort_order,
+        )
+        if canned is None:
+            raise CannedNotFoundError(f"Canned response {canned_id} not found")
+        await self.session.commit()
+        await self.session.refresh(canned)
+        return canned
+
+    async def delete_canned(self, canned_id: int) -> None:
+        """Delete a canned response and commit.
+
+        Args:
+            canned_id: The template's primary key.
+
+        Raises:
+            CannedNotFoundError: If the template does not exist.
+        """
+        deleted = await self.repo.delete(canned_id)
+        if not deleted:
+            raise CannedNotFoundError(f"Canned response {canned_id} not found")
         await self.session.commit()

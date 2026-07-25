@@ -15,10 +15,12 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.support import SUPPORT_STATUSES
+from app.models.support import CANNED_LANGS, SUPPORT_STATUSES
 
 # Rendered literal set for the ``status`` field description / error.
 _STATUS_CHOICES: str = " | ".join(SUPPORT_STATUSES)
+# Rendered literal set for the canned ``lang`` field description / error.
+_CANNED_LANG_CHOICES: str = " | ".join(CANNED_LANGS)
 
 
 class ConversationOut(BaseModel):
@@ -103,4 +105,56 @@ class StatusIn(BaseModel):
         """
         if value not in SUPPORT_STATUSES:
             raise ValueError(f"status must be one of {_STATUS_CHOICES}")
+        return value
+
+
+class CannedOut(BaseModel):
+    """One canned reply template (admin picker / management)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    text: str
+    lang: str
+    sort_order: int
+    created_at: datetime
+
+
+class CannedIn(BaseModel):
+    """Body for creating / updating a canned reply template."""
+
+    title: str = Field(
+        min_length=1,
+        max_length=100,
+        description="Short picker label.",
+    )
+    text: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Reply body (Telegram's 4096-char text cap).",
+    )
+    lang: str = Field(
+        ...,
+        description=f"Template language ({_CANNED_LANG_CHOICES}).",
+    )
+    sort_order: int = 0
+
+    @field_validator("lang")
+    @classmethod
+    def _lang_valid(cls, value: str) -> str:
+        """Reject any language outside :data:`CANNED_LANGS`.
+
+        Args:
+            value: The submitted language.
+
+        Returns:
+            str: The validated language.
+
+        Raises:
+            ValueError: If the language is not a known value (mapped to 422 by
+                FastAPI's request-validation handler).
+        """
+        if value not in CANNED_LANGS:
+            raise ValueError(f"lang must be one of {_CANNED_LANG_CHOICES}")
         return value
