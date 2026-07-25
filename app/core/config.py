@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     # header value does not match this setting.
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
+    # Support conversations inactive for longer than this are purged (storage
+    # limitation, LP195/2024 Art.5). ~12 months, consistent with the
+    # customer-inquiry retention default.
+    support_retention_days: int = 365
 
     @property
     def cors_origins_list(self) -> list[str]:

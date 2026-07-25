@@ -10,7 +10,9 @@ updates can be re-delivered, so :meth:`SupportRepository.message_exists` gives
 the service a de-duplication check keyed on ``(conversation_id, tg_message_id)``.
 """
 
-from sqlalchemy import Select, func, select, update
+from datetime import datetime
+
+from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.support import SupportConversation, SupportMessage
@@ -281,6 +283,41 @@ class SupportRepository:
             .values(unread_count=0)
         )
         await self.session.execute(stmt)
+
+    async def delete_stale(self, cutoff: datetime) -> int:
+        """Delete every conversation last active before ``cutoff``.
+
+        The ``support_message.conversation_id`` FK is ``ON DELETE CASCADE``, so
+        each conversation's messages are removed with it.
+
+        Args:
+            cutoff: Conversations whose ``last_message_at`` is strictly before
+                this instant are deleted (the retention window boundary).
+
+        Returns:
+            int: The number of conversations deleted.
+        """
+        stmt = delete(SupportConversation).where(
+            SupportConversation.last_message_at < cutoff
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount
+
+    async def delete_conversation(self, conversation_id: int) -> bool:
+        """Delete one conversation by primary key (messages cascade).
+
+        Args:
+            conversation_id: The conversation's primary key.
+
+        Returns:
+            bool: ``True`` if a conversation was deleted, ``False`` if none
+            matched the id.
+        """
+        stmt = delete(SupportConversation).where(
+            SupportConversation.id == conversation_id
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount > 0
 
     async def bump_activity(
         self,

@@ -238,3 +238,37 @@ async def set_status(
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     return ConversationOut.model_validate(conv)
+
+
+@router.delete(
+    "/conversations/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_conversation(
+    conversation_id: int,
+    session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> None:
+    """Hard-delete a conversation and its messages (on-request erasure).
+
+    The on-request erasure path (LP195/2024 Art.17) for Telegram support data,
+    which is not account-linked (so account erasure cannot reach it). Deleting
+    the conversation cascades to its messages; other operators' live inboxes are
+    told to drop it via a published event.
+
+    Args:
+        conversation_id: The conversation to erase.
+        session: Injected async DB session.
+        redis: Injected async Redis client (live-event publishing).
+
+    Raises:
+        HTTPException: 404 if the conversation does not exist.
+    """
+    svc = SupportService(session, redis)
+    try:
+        await svc.delete_conversation(conversation_id)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc

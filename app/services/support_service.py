@@ -19,6 +19,7 @@ raised exceptions.
 """
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,14 +51,16 @@ class SupportService:
     def __init__(
         self,
         session: AsyncSession,
-        redis: Redis,
+        redis: Redis | None = None,
         telegram=None,
     ) -> None:
         """Bind the service to its session, Redis client and Telegram client.
 
         Args:
             session: Active async session used for all reads and writes.
-            redis: Shared async Redis client for publishing live events.
+            redis: Shared async Redis client for publishing live events, or
+                ``None`` for batch paths (retention purge) that never publish.
+                Every HTTP caller passes it.
             telegram: Telegram client exposing ``send_message``; defaults to
                 :mod:`app.core.telegram`. Tests may inject a stub.
         """
@@ -175,6 +178,47 @@ class SupportService:
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "status")
         return conv
+
+    async def purge_stale(self, retention_days: int) -> int:
+        """Delete conversations inactive past the retention window.
+
+        Batch cleanup (LP195/2024 Art.5 storage limitation): removes every
+        conversation whose ``last_message_at`` is older than ``retention_days``
+        (their messages cascade). Does NOT publish per-row events — this is a
+        bulk sweep, not an operator action.
+
+        Args:
+            retention_days: The retention window in days; conversations inactive
+                longer than this are purged.
+
+        Returns:
+            int: The number of conversations deleted.
+        """
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        deleted = await self.repo.delete_stale(cutoff)
+        await self.session.commit()
+        logger.info("support: purged %s stale conversations", deleted)
+        return deleted
+
+    async def delete_conversation(self, conversation_id: int) -> None:
+        """Hard-delete one conversation and its messages (on-request erasure).
+
+        The on-request erasure path (LP195/2024 Art.17) for Telegram support
+        data, which is not account-linked. Publishes a ``"status"`` event so
+        other operators' live inboxes refetch and drop the removed row.
+
+        Args:
+            conversation_id: The conversation to erase.
+
+        Raises:
+            ConversationNotFoundError: If the conversation does not exist.
+        """
+        deleted = await self.repo.delete_conversation(conversation_id)
+        if not deleted:
+            raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
+        await self.session.commit()
+        if self.redis is not None:
+            await publish_support_event(self.redis, conversation_id, "status")
 
     async def list_conversations(
         self,
