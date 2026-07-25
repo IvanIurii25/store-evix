@@ -232,7 +232,15 @@ def _build_mappings() -> dict:
         props[f"category_{lang}"] = {"type": "text", "analyzer": "standard_clean"}
         props[f"attrs_{lang}"] = {"type": "text", "analyzer": "standard_clean"}
         props[f"desc_{lang}"] = {"type": "text", "analyzer": "standard_clean"}
-        props[f"name_{lang}_completion"] = {"type": "completion"}
+        # Completion field with an explicit ``standard_clean`` analyzer: the
+        # default ``simple`` analyzer DROPS digits, so a prefix like "3d" would
+        # collapse to "d" and suggest every name starting with D. standard_clean
+        # keeps "3d" as a token and folds diacritics (so "cas" suggests "Căști").
+        props[f"name_{lang}_completion"] = {
+            "type": "completion",
+            "analyzer": "standard_clean",
+            "search_analyzer": "standard_clean",
+        }
     return {"properties": props}
 
 

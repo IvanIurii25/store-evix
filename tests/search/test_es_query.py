@@ -44,9 +44,12 @@ class TestIndexBody:
         assert "keyboard" not in fields  # ro has no keyboard subfield
 
     def test_completion_fields_have_no_context(self) -> None:
-        # Single-tenant → no group_id completion context (V3 delta).
+        # Single-tenant → no group_id completion context (V3 delta). Uses the
+        # standard_clean analyzer so digit prefixes ("3d") don't collapse to "d".
         comp = INDEX_BODY["mappings"]["properties"]["name_ru_completion"]
-        assert comp == {"type": "completion"}
+        assert comp["type"] == "completion"
+        assert "contexts" not in comp
+        assert comp["analyzer"] == "standard_clean"
 
     def test_code_prefix_subfield(self) -> None:
         code = INDEX_BODY["mappings"]["properties"]["code"]
