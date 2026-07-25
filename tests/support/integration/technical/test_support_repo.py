@@ -198,6 +198,84 @@ class SupportRepositoryInboxTest:
         assert page[0].id == ids[1], "offset must skip the newest row"
 
 
+class SupportRepositoryRetentionTest:
+    """``delete_stale`` (retention purge) / ``delete_conversation`` (erasure)."""
+
+    async def test_delete_stale_removes_only_old_and_cascades(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: two stale conversations (before the cutoff) and one fresh
+        # (after it); one stale conversation carries a message to prove CASCADE.
+        repo = SupportRepository(db_session)
+        cutoff = _BASE_TIME
+        stale_a = await _new_conversation(repo, tg_chat_id=_CHAT_A)
+        stale_b = await _new_conversation(repo, tg_chat_id=_CHAT_B)
+        fresh = await _new_conversation(repo, tg_chat_id=_CHAT_C)
+        stale_a.last_message_at = cutoff - timedelta(days=1)
+        stale_b.last_message_at = cutoff - timedelta(days=1)
+        fresh.last_message_at = cutoff + timedelta(days=1)
+        await db_session.flush()
+        await repo.add_message(
+            conversation_id=stale_a.id,
+            direction="in",
+            text="old",
+            tg_message_id=800,
+        )
+        await db_session.flush()
+        fresh_id = fresh.id
+
+        # Act: purge everything last active strictly before the cutoff.
+        deleted = await repo.delete_stale(cutoff)
+
+        # Assert: exactly the two stale rows are gone; the fresh one remains.
+        assert deleted == 2, "only the two stale conversations must be deleted"
+        assert await repo.get_conversation(stale_a.id) is None, "stale_a purged"
+        assert await repo.get_conversation(stale_b.id) is None, "stale_b purged"
+        assert (
+            await repo.get_conversation(fresh_id)
+        ) is not None, "the fresh conversation must survive the purge"
+        # The stale conversation's message cascaded with it.
+        assert (
+            await repo.count_thread(stale_a.id) == 0
+        ), "the stale conversation's messages must cascade-delete"
+
+    async def test_delete_conversation_present_removes_and_cascades(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: a conversation with a message attached.
+        repo = SupportRepository(db_session)
+        conv = await _new_conversation(repo, tg_chat_id=_CHAT_A)
+        await repo.add_message(
+            conversation_id=conv.id,
+            direction="in",
+            text="erase me",
+            tg_message_id=810,
+        )
+        await db_session.flush()
+        conv_id = conv.id
+
+        # Act: erase the conversation by id.
+        deleted = await repo.delete_conversation(conv_id)
+
+        # Assert: reports success, the row and its messages are gone.
+        assert deleted is True, "deleting an existing conversation returns True"
+        assert await repo.get_conversation(conv_id) is None, "conversation removed"
+        assert (
+            await repo.count_thread(conv_id) == 0
+        ), "the conversation's messages must cascade-delete"
+
+    async def test_delete_conversation_missing_returns_false(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: an empty repo.
+        repo = SupportRepository(db_session)
+
+        # Act + Assert: deleting an unknown id reports no deletion.
+        assert (
+            await repo.delete_conversation(999999) is False
+        ), "deleting a missing conversation returns False"
+
+
 class SupportRepositoryMutationTest:
     """``set_status`` / ``mark_read`` / ``bump_activity`` branches."""
 

@@ -277,6 +277,50 @@ class AdminStatusTest:
         assert resp.json()["error"]["code"] == "not_found"
 
 
+class AdminDeleteTest:
+    """``DELETE /conversations/{id}`` — on-request erasure 204 / 404 / guard."""
+
+    async def test_delete_existing_returns_204_and_removes_it(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ) -> None:
+        # Arrange: a conversation to erase on request.
+        conv = await _seed_conversation(db_session, tg_chat_id=_CHAT_A)
+
+        # Act: delete it.
+        resp = await client.delete(f"{_BASE}/{conv.id}")
+
+        # Assert: 204 No Content, and a follow-up read now 404s (row is gone).
+        assert resp.status_code == 204, resp.text
+        follow_up = await client.get(f"{_BASE}/{conv.id}")
+        assert follow_up.status_code == 404, "the erased conversation must be gone"
+
+    async def test_delete_unknown_conversation_404(
+        self, client: AsyncClient
+    ) -> None:
+        # Act: delete a conversation that does not exist.
+        resp = await client.delete(f"{_BASE}/999999")
+
+        # Assert: mapped to the domain 404.
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["error"]["code"] == "not_found"
+
+    async def test_delete_guest_guard(
+        self,
+        guest_client: AsyncClient,
+        db_session: AsyncSession,
+    ) -> None:
+        # Arrange: a conversation an unauthenticated caller must not erase.
+        conv = await _seed_conversation(db_session, tg_chat_id=_CHAT_A)
+
+        # Act: an unauthenticated caller attempts the delete.
+        resp = await guest_client.delete(f"{_BASE}/{conv.id}")
+
+        # Assert: the current_staff guard blocks it (401/403).
+        assert resp.status_code in (401, 403), resp.text
+
+
 class AdminStreamTest:
     """SSE ``GET /conversations/stream`` — light open smoke."""
 
