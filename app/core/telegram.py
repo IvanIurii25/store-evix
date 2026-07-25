@@ -11,6 +11,7 @@ one shape this MVP handles — a private text message — and ignores everything
 else defensively (never raising on malformed payloads).
 """
 
+import os
 import secrets
 from dataclasses import dataclass
 
@@ -38,7 +39,13 @@ def _get_bot() -> Bot | None:
 
 @dataclass(frozen=True)
 class InboundMessage:
-    """A parsed inbound private text message from a Telegram update."""
+    """A parsed inbound private message from a Telegram update.
+
+    Carries a plain text body and, when the customer sent a photo or document,
+    the attachment reference (``attachment_file_id`` / ``attachment_kind`` /
+    ``attachment_name``). For an attachment message ``text`` is the caption (may
+    be empty). All three attachment fields are ``None`` for a plain text message.
+    """
 
     chat_id: int
     message_id: int
@@ -46,14 +53,46 @@ class InboundMessage:
     customer_name: str | None
     customer_username: str | None
     lang: str | None
+    attachment_file_id: str | None = None
+    attachment_kind: str | None = None
+    attachment_name: str | None = None
+
+
+def _parse_attachment(message: dict) -> tuple[str, str, str | None] | None:
+    """Extract an attachment reference (file id, kind, name) from a message.
+
+    Recognizes a photo (``message["photo"]`` — a non-empty list of sizes, of
+    which the last is the largest) and a document (``message["document"]``).
+    Fully defensive — anything else yields ``None``.
+
+    Args:
+        message: The raw Telegram ``message`` dict.
+
+    Returns:
+        tuple[str, str, str | None] | None: ``(file_id, kind, name)`` — ``kind``
+        is ``"photo"`` (``name`` is ``None``) or ``"document"`` (``name`` is the
+        original filename, if any) — or ``None`` for a non-attachment message.
+    """
+    photo = message.get("photo")
+    if isinstance(photo, list) and photo:
+        file_id = (photo[-1] or {}).get("file_id")
+        if file_id:
+            return file_id, "photo", None
+    document = message.get("document")
+    if isinstance(document, dict):
+        file_id = document.get("file_id")
+        if file_id:
+            return file_id, "document", document.get("file_name")
+    return None
 
 
 def parse_inbound(update: dict) -> InboundMessage | None:
-    """Extract a private text message from a raw Telegram update dict.
+    """Extract a private message from a raw Telegram update dict.
 
-    Only ``update["message"]`` with non-empty ``"text"`` is handled (MVP is
-    text-only): edited messages, callbacks, photos, join events, etc. are
-    ignored. Fully defensive — a malformed update yields ``None``, never raises.
+    Handles ``update["message"]`` when it carries either non-empty ``"text"`` or
+    a photo/document attachment (the caption becomes ``text``, possibly empty).
+    Edited messages, callbacks, join events, stickers, video, etc. are ignored.
+    Fully defensive — a malformed update yields ``None``, never raises.
 
     Args:
         update: The raw Telegram update payload (webhook body).
@@ -64,9 +103,6 @@ def parse_inbound(update: dict) -> InboundMessage | None:
     message = update.get("message")
     if not isinstance(message, dict):
         return None
-    text = message.get("text")
-    if not text:
-        return None
 
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
@@ -74,8 +110,18 @@ def parse_inbound(update: dict) -> InboundMessage | None:
     if chat_id is None or message_id is None:
         return None
 
+    attachment = _parse_attachment(message)
+    text = message.get("text")
+    if attachment is not None:
+        file_id, kind, name = attachment
+        text = message.get("caption") or ""
+    elif text:
+        file_id = kind = name = None
+    else:
+        return None
+
     sender = message.get("from") or {}
-    name = " ".join(
+    display_name = " ".join(
         part for part in (sender.get("first_name"), sender.get("last_name")) if part
     ).strip()
 
@@ -83,9 +129,12 @@ def parse_inbound(update: dict) -> InboundMessage | None:
         chat_id=chat_id,
         message_id=message_id,
         text=text,
-        customer_name=name or None,
+        customer_name=display_name or None,
         customer_username=sender.get("username"),
         lang=sender.get("language_code"),
+        attachment_file_id=file_id,
+        attachment_kind=kind,
+        attachment_name=name,
     )
 
 
@@ -124,6 +173,37 @@ async def send_to_chat_isolated(chat_id: str, text: str) -> None:
     bot = Bot(token=settings.telegram_bot_token)
     try:
         await bot.send_message(chat_id=chat_id, text=text)
+    finally:
+        await bot.session.close()
+
+
+async def download_file_isolated(file_id: str) -> tuple[bytes, str] | None:
+    """Download a Telegram file's bytes via a throwaway ``Bot``, closing after.
+
+    For use from Celery tasks (mirrors :func:`send_to_chat_isolated`): the shared
+    module-level bot's session is bound to the web app's event loop and cannot be
+    reused across the fresh ``asyncio.run`` loop each task spins up. Resolves the
+    file via ``get_file``, downloads its bytes, and closes the session in a
+    ``finally``.
+
+    Args:
+        file_id: The Telegram ``file_id`` of the photo/document to download.
+
+    Returns:
+        tuple[bytes, str] | None: ``(data, ext)`` where ``ext`` is the file
+        extension including the leading dot (e.g. ``.jpg``, or ``""`` when the
+        source path has none), or ``None`` when no token is configured (dev
+        no-op).
+    """
+    if not settings.telegram_bot_token:
+        return None
+    bot = Bot(token=settings.telegram_bot_token)
+    try:
+        file = await bot.get_file(file_id)
+        buffer = await bot.download_file(file.file_path)
+        data = buffer.read()
+        ext = os.path.splitext(file.file_path or "")[1]
+        return data, ext
     finally:
         await bot.session.close()
 

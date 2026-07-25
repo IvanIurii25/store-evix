@@ -25,7 +25,7 @@ from app.core.db import get_session
 from app.core.redis import get_redis
 from app.core.telegram import parse_inbound, verify_webhook_secret
 from app.services.support_service import SupportService
-from app.tasks.support import notify_staff
+from app.tasks.support import fetch_attachment, notify_staff
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 
@@ -46,12 +46,13 @@ async def telegram_webhook(
     """Ingest one Telegram webhook update and ack it fast.
 
     Verifies the secret token, parses the update and — when it's a private text
-    message this MVP handles — persists it and publishes a live inbox event via
-    :class:`~app.services.support_service.SupportService`. When that message
-    starts a fresh unread burst (and a staff chat is configured), enqueues the
-    ``support.notify_staff`` Celery task so the heavy/failable staff-group send
-    happens off the ack path. Any non-handled or malformed update is ignored and
-    still answered ``200`` so Telegram stops retrying.
+    message or photo/document this MVP handles — persists it and publishes a live
+    inbox event via :class:`~app.services.support_service.SupportService`. When
+    that message starts a fresh unread burst (and a staff chat is configured),
+    enqueues the ``support.notify_staff`` Celery task; when it carried an
+    attachment, enqueues ``support.fetch_attachment`` to download and store the
+    file — both off the ack path. Any non-handled or malformed update is ignored
+    and still answered ``200`` so Telegram stops retrying.
 
     Args:
         request: The incoming webhook request (raw update in the JSON body).
@@ -81,10 +82,14 @@ async def telegram_webhook(
     if inbound is None:
         return {"ok": True}
 
-    conversation_id, snippet = await SupportService(session, redis).handle_inbound(
-        inbound
-    )
-    if conversation_id is not None and settings.telegram_staff_chat_id:
+    outcome = await SupportService(session, redis).handle_inbound(inbound)
+    if outcome.conversation_id is not None and settings.telegram_staff_chat_id:
         name = inbound.customer_name or inbound.customer_username or "клиент"
-        notify_staff.delay(conversation_id, name, snippet[:200])
+        notify_staff.delay(outcome.conversation_id, name, outcome.notify_snippet[:200])
+    if outcome.attachment is not None:
+        fetch_attachment.delay(
+            outcome.attachment.message_id,
+            outcome.attachment.conversation_id,
+            outcome.attachment.file_id,
+        )
     return {"ok": True}

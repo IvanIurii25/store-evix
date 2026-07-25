@@ -21,7 +21,7 @@ integrator when mounting):
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,8 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_staff
 from app.core.db import get_session
 from app.core.redis import get_redis
+from app.core.storage import get_storage
 from app.core.support_events import subscribe_support_events
+from app.models.support import SupportMessage
 from app.models.user import AppUser
+from app.repositories.support_repo import SupportRepository
 from app.schemas.support import (
     CannedIn,
     CannedOut,
@@ -60,6 +63,25 @@ router = APIRouter(
 # Page sizes for the inbox list and a conversation's message thread (§4).
 DEFAULT_PAGE_SIZE: int = 20
 THREAD_PAGE_SIZE: int = 50
+
+
+def _to_message_out(message: SupportMessage) -> MessageOut:
+    """Serialize a message row, flagging whether its attachment is downloaded.
+
+    ``attachment_ready`` is a derived field (not an ORM column): the attachment
+    is streamable once its object key is set, which the fetch task fills
+    asynchronously after the message row already exists.
+
+    Args:
+        message: The message ORM row.
+
+    Returns:
+        MessageOut: The serialized message with ``attachment_ready`` derived from
+        the presence of a stored object key.
+    """
+    out = MessageOut.model_validate(message)
+    out.attachment_ready = message.attachment_key is not None
+    return out
 
 
 @router.get("/conversations", response_model=ConversationList)
@@ -175,12 +197,63 @@ async def get_conversation(
     linked = await svc.get_linked_order(conv)
     return ThreadOut(
         conversation=ConversationOut.model_validate(conv),
-        data=[MessageOut.model_validate(m) for m in messages],
+        data=[_to_message_out(m) for m in messages],
         total=total,
         page=page,
         page_size=THREAD_PAGE_SIZE,
         linked_order=LinkedOrderOut.model_validate(linked) if linked else None,
     )
+
+
+@router.get("/conversations/{conversation_id}/attachments/{message_id}")
+async def get_attachment(
+    conversation_id: int,
+    message_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Stream a customer's stored attachment to a staff operator (private proxy).
+
+    Support attachments are never public: they are stored under a private object
+    key and streamed only through this staff-only endpoint (the router's
+    ``current_staff`` dependency). Resolves the message, verifies it belongs to
+    the conversation and has a stored key, fetches the bytes and returns them
+    inline; a document keeps its original filename in ``Content-Disposition``.
+
+    Args:
+        conversation_id: The conversation the attachment must belong to.
+        message_id: The attachment message's primary key.
+        session: Injected async DB session.
+
+    Returns:
+        Response: The attachment bytes with the stored content type.
+
+    Raises:
+        HTTPException: 404 if the message is missing, does not belong to the
+            conversation, has no stored attachment, or the object is gone.
+    """
+    message = await SupportRepository(session).get_message(message_id)
+    if (
+        message is None
+        or message.conversation_id != conversation_id
+        or message.attachment_key is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "Attachment not found"},
+        )
+
+    fetched = await get_storage().fetch_key(message.attachment_key)
+    if fetched is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "Attachment not found"},
+        )
+
+    data, content_type = fetched
+    headers: dict[str, str] = {}
+    if message.attachment_name:
+        headers["Content-Disposition"] = f'inline; filename="{message.attachment_name}"'
+    return Response(content=data, media_type=content_type, headers=headers)
 
 
 @router.post("/conversations/{conversation_id}/reply", response_model=MessageOut)
@@ -217,7 +290,7 @@ async def reply(
     # ``created_at`` is a DB ``server_default`` not populated on the instance
     # after commit — refresh so the serialized message carries a timestamp.
     await session.refresh(msg)
-    return MessageOut.model_validate(msg)
+    return _to_message_out(msg)
 
 
 @router.post("/conversations/{conversation_id}/status", response_model=ConversationOut)

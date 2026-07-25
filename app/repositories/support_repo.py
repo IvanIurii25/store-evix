@@ -105,6 +105,8 @@ class SupportRepository:
         tg_message_id: int | None = None,
         sender_staff_id: int | None = None,
         delivery: str | None = None,
+        attachment_kind: str | None = None,
+        attachment_name: str | None = None,
     ) -> SupportMessage:
         """Insert one append-only message and return it flushed.
 
@@ -115,6 +117,11 @@ class SupportRepository:
             tg_message_id: Telegram message id, or ``None``.
             sender_staff_id: Operator who sent an outbound message, or ``None``.
             delivery: Outbound send result, or ``None``.
+            attachment_kind: ``"photo"``/``"document"`` for an inbound message
+                carrying a file, or ``None`` for a plain-text message. The object
+                key (``attachment_key``) is filled asynchronously by the fetch
+                task, so it is left NULL here.
+            attachment_name: Original document filename, or ``None``.
 
         Returns:
             SupportMessage: The persisted message with its id.
@@ -126,10 +133,27 @@ class SupportRepository:
             tg_message_id=tg_message_id,
             sender_staff_id=sender_staff_id,
             delivery=delivery,
+            attachment_kind=attachment_kind,
+            attachment_name=attachment_name,
         )
         self.session.add(message)
         await self.session.flush()
         return message
+
+    async def get_message(self, message_id: int) -> SupportMessage | None:
+        """Return a message by primary key, or ``None``.
+
+        Used by the staff attachment proxy to resolve a message's stored object
+        key before streaming it.
+
+        Args:
+            message_id: The message's primary key.
+
+        Returns:
+            SupportMessage | None: The matching message, if any.
+        """
+        stmt = select(SupportMessage).where(SupportMessage.id == message_id)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def message_exists(
         self,

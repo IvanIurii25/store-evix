@@ -232,9 +232,10 @@ class SupportServiceStartOrderTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the opening "/start o<number>".
-        conv_id, snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_ORDER, payload=f"o{order.number}")
         )
+        conv_id, snippet = outcome.conversation_id, outcome.notify_snippet
 
         # Assert: a conversation is created, linked to the order, and its context
         # inbound names the order number.
@@ -260,11 +261,12 @@ class SupportServiceStartOrderTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest "/start o<missing-number>".
-        conv_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(
                 chat_id=_CHAT_MISSING_ORDER, payload=f"o{_MISSING_ORDER_NUMBER}"
             )
         )
+        conv_id = outcome.conversation_id
 
         # Assert: an unresolved order resolves like the generic "site" case — no link.
         conv = await SupportRepository(db_session).get_conversation(conv_id)

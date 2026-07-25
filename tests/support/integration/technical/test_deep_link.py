@@ -150,9 +150,10 @@ class SupportServiceStartProductTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the opening "/start p<id>".
-        conv_id, snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_PRODUCT, payload=f"p{product_id}")
         )
+        conv_id, snippet = outcome.conversation_id, outcome.notify_snippet
 
         # Assert: a fresh conversation → its id is returned (staff get pinged).
         assert conv_id is not None, "opening /start starts a conversation → returns id"
@@ -184,9 +185,10 @@ class SupportServiceStartProductTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the opening "/start p<id>".
-        conv_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_PRODUCT, payload=f"p{product_id}")
         )
+        conv_id = outcome.conversation_id
 
         # Assert: the raw command text is never persisted as a message.
         texts = await _thread_texts(db_session, conv_id)
@@ -204,9 +206,10 @@ class SupportServiceStartProductTest:
         service = SupportService(db_session, redis_client)
 
         # Act: open the chat with a product deep-link.
-        conv_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_PRODUCT, payload=f"p{product_id}")
         )
+        conv_id = outcome.conversation_id
 
         # Assert: the greeting persisted as "sent" with no Telegram id (dev no-op).
         outbound = [
@@ -234,9 +237,10 @@ class SupportServiceStartGenericTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the bare-or-site "/start".
-        conv_id, snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_SITE, payload=payload)
         )
+        conv_id, snippet = outcome.conversation_id, outcome.notify_snippet
 
         # Assert: generic context inbound + a greeting naming no product.
         assert conv_id is not None, "opening /start returns the conversation id"
@@ -255,9 +259,10 @@ class SupportServiceStartGenericTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest "/start p<missing_id>".
-        conv_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_MISSING, payload=f"p{_MISSING_PRODUCT_ID}")
         )
+        conv_id = outcome.conversation_id
 
         # Assert: an unresolved product resolves like the generic "site" case.
         context, greeting = await _messages(db_session, conv_id)
@@ -277,15 +282,17 @@ class SupportServiceStartEdgeTest:
     ) -> None:
         # Arrange: a first "/start site" establishes the conversation.
         service = SupportService(db_session, redis_client)
-        conv_id, _snippet = await service.handle_inbound(
+        first = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_DUP, payload="site")
         )
+        conv_id = first.conversation_id
         before = await _count_messages(db_session, conv_id)
 
         # Act: the SAME update (same chat + tg_message_id) is delivered again.
-        result_id, snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_DUP, payload="site")
         )
+        result_id, snippet = outcome.conversation_id, outcome.notify_snippet
 
         # Assert: the re-delivery dedups — no id, empty snippet, no extra messages.
         assert result_id is None, "a re-delivered /start must dedup and not re-ping"
@@ -307,9 +314,10 @@ class SupportServiceStartEdgeTest:
         service = SupportService(db_session, redis_client)
 
         # Act: open the chat — the greeting send fails but must not raise.
-        conv_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_FAIL, payload="site")
         )
+        conv_id = outcome.conversation_id
 
         # Assert: the greeting is saved with a "failed" delivery badge, call succeeds.
         assert conv_id is not None, (

@@ -50,6 +50,11 @@ class MessageOut(BaseModel):
     delivery: str | None
     sender_staff_id: int | None
     created_at: datetime
+    # Attachment kind ("photo"/"document") for a message carrying a file, else
+    # None. ``attachment_ready`` is True once the file has been downloaded and
+    # stored (its key is set), so the client knows the staff proxy will serve it.
+    attachment_kind: str | None = None
+    attachment_ready: bool = False
 
 
 class ConversationList(BaseModel):

@@ -19,6 +19,7 @@ raised exceptions.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
@@ -66,6 +67,43 @@ class OrderNotFoundError(SupportError):
     code = "order_not_found"
 
 
+@dataclass(frozen=True)
+class AttachmentRef:
+    """A stored inbound message plus the Telegram file to fetch for it.
+
+    Handed back by :meth:`SupportService.handle_inbound` so the webhook can
+    enqueue the download task (the message row already exists; the fetch fills
+    its ``attachment_key`` once the bytes are stored).
+    """
+
+    message_id: int
+    conversation_id: int
+    file_id: str
+    kind: str
+    name: str | None
+
+
+@dataclass(frozen=True)
+class InboundOutcome:
+    """The result of handling one inbound update.
+
+    Attributes:
+        conversation_id: The conversation id to ping staff on — set only when
+            this message starts a fresh unread burst (debounced to one ping per
+            burst); ``None`` for a follow-up while already unread or a deduped
+            re-delivery.
+        notify_snippet: The staff-ping text (raw message / friendly ``/start``
+            context line / attachment placeholder), or ``""`` for a deduped
+            update.
+        attachment: The reference to enqueue a download for, or ``None`` for a
+            plain-text message.
+    """
+
+    conversation_id: int | None
+    notify_snippet: str
+    attachment: AttachmentRef | None = None
+
+
 class SupportService:
     """Support-inbox operations bound to one session and Redis client."""
 
@@ -90,26 +128,23 @@ class SupportService:
         self.repo = SupportRepository(session)
         self.telegram = telegram or telegram_client
 
-    async def handle_inbound(self, inbound: InboundMessage) -> tuple[int | None, str]:
+    async def handle_inbound(self, inbound: InboundMessage) -> "InboundOutcome":
         """Persist an inbound Telegram message and publish a live event (§).
 
         Finds or creates the conversation, refreshes the customer snapshot,
         de-duplicates re-delivered updates, appends the message, bumps activity,
-        commits and publishes an ``"inbound"`` event.
+        commits and publishes an ``"inbound"`` event. A photo/document is stored
+        with its attachment metadata (``attachment_kind`` / ``attachment_name``);
+        its bytes are downloaded asynchronously by the caller-enqueued fetch task
+        (the returned :class:`InboundOutcome` carries the :class:`AttachmentRef`).
 
         Args:
             inbound: The parsed inbound message.
 
         Returns:
-            tuple[int | None, str]: ``(conversation_id, notify_snippet)``. The
-                ``conversation_id`` is set only when this message starts a fresh
-                unread burst (the conversation was new or previously read), so
-                the caller should ping staff once; it is ``None`` for a
-                re-delivered / deduped update or a follow-up while the
-                conversation was already unread (debouncing to one ping per
-                burst). ``notify_snippet`` is the staff-ping text: the raw
-                message for a normal inbound, the friendly ``/start`` context
-                line for a deep-link, and ``""`` for a deduped update.
+            InboundOutcome: The ping decision (``conversation_id`` set only for a
+                fresh unread burst), the staff-ping snippet, and an
+                :class:`AttachmentRef` when the message carried a file.
         """
         conv = await self.repo.get_by_tg_chat_id(inbound.chat_id)
         is_new = conv is None
@@ -126,10 +161,13 @@ class SupportService:
             conv.lang = inbound.lang
 
             if await self.repo.message_exists(conv.id, inbound.message_id):
-                return (None, "")
+                return InboundOutcome(None, "")
 
         if inbound.text.startswith("/start"):
             return await self._handle_start(conv, is_new, inbound)
+
+        if inbound.attachment_kind is not None:
+            return await self._handle_attachment(conv, is_new, inbound)
 
         fresh_burst = is_new or (conv.unread_count or 0) == 0
 
@@ -142,14 +180,84 @@ class SupportService:
         await self.repo.bump_activity(conv, inbound=True)
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "inbound")
-        return (conv.id if fresh_burst else None, inbound.text)
+        return InboundOutcome(conv.id if fresh_burst else None, inbound.text)
+
+    async def _handle_attachment(
+        self,
+        conv: SupportConversation,
+        is_new: bool,
+        inbound: InboundMessage,
+    ) -> "InboundOutcome":
+        """Store an inbound photo/document message and return its fetch ref (§).
+
+        Records the message with its attachment metadata (the caption as
+        ``text``, or a placeholder when the caption is empty), bumps activity,
+        commits and publishes an ``"inbound"`` event. The object key stays NULL
+        until the caller-enqueued fetch task downloads and stores the bytes.
+
+        Args:
+            conv: The find-or-created conversation (snapshot already refreshed).
+            is_new: Whether the conversation was created by this update.
+            inbound: The parsed inbound message carrying the attachment.
+
+        Returns:
+            InboundOutcome: The ping decision, the snippet, and the
+                :class:`AttachmentRef` to enqueue a download for.
+        """
+        kind = inbound.attachment_kind
+        caption = inbound.text
+        text = caption or (
+            "📷 Фото"
+            if kind == "photo"
+            else f"📎 {inbound.attachment_name or 'Документ'}"
+        )
+        fresh_burst = is_new or (conv.unread_count or 0) == 0
+
+        msg = await self.repo.add_message(
+            conversation_id=conv.id,
+            direction="in",
+            text=text,
+            tg_message_id=inbound.message_id,
+            attachment_kind=inbound.attachment_kind,
+            attachment_name=inbound.attachment_name,
+        )
+        await self.repo.bump_activity(conv, inbound=True)
+        await self.session.commit()
+        await publish_support_event(self.redis, conv.id, "inbound")
+        return InboundOutcome(
+            conv.id if fresh_burst else None,
+            text,
+            AttachmentRef(
+                msg.id,
+                conv.id,
+                inbound.attachment_file_id,
+                inbound.attachment_kind,
+                inbound.attachment_name,
+            ),
+        )
+
+    async def set_attachment_key(self, message_id: int, key: str) -> None:
+        """Set the stored object key on an inbound attachment message (§).
+
+        Called by the fetch task once a customer's attachment has been downloaded
+        and stored privately; makes the message streamable by the staff proxy.
+
+        Args:
+            message_id: The attachment message's primary key.
+            key: The object key the bytes were stored under.
+        """
+        msg = await self.repo.get_message(message_id)
+        if msg is None:
+            return
+        msg.attachment_key = key
+        await self.session.commit()
 
     async def _handle_start(
         self,
         conv: SupportConversation,
         is_new: bool,
         inbound: InboundMessage,
-    ) -> tuple[int | None, str]:
+    ) -> "InboundOutcome":
         """Handle a Telegram ``/start [payload]`` deep-link opening the chat (§).
 
         A storefront "Написать в поддержку" link opens the bot with a payload
@@ -166,13 +274,13 @@ class SupportService:
             inbound: The parsed ``/start`` message.
 
         Returns:
-            tuple[int | None, str]: ``(conversation_id, context)`` — the
+            InboundOutcome: ``(conversation_id, context)`` — the
                 ``conversation_id`` to ping staff on with the friendly context
                 line as the snippet, or ``(None, "")`` for a re-delivered
-                ``/start`` already recorded.
+                ``/start`` already recorded. Never carries an attachment.
         """
         if not is_new and await self.repo.message_exists(conv.id, inbound.message_id):
-            return (None, "")
+            return InboundOutcome(None, "")
 
         payload = inbound.text[len("/start") :].strip()
         context, greeting_name, linked_order_id = await self._resolve_start_context(
@@ -207,7 +315,7 @@ class SupportService:
 
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "inbound")
-        return (conv.id, context)
+        return InboundOutcome(conv.id, context)
 
     async def _resolve_start_context(
         self,

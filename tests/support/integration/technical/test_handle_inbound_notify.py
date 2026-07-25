@@ -71,9 +71,10 @@ class SupportServiceHandleInboundBurstTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the first-ever inbound for this chat.
-        conv_id, snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _inbound(chat_id=_CHAT_NEW, message_id=_MSG_FIRST)
         )
+        conv_id, snippet = outcome.conversation_id, outcome.notify_snippet
 
         # Assert: a brand-new conversation is a fresh burst → its id is returned.
         conv = await SupportRepository(db_session).get_by_tg_chat_id(_CHAT_NEW)
@@ -93,9 +94,10 @@ class SupportServiceHandleInboundBurstTest:
         service = SupportService(db_session, redis_client)
 
         # Act: a NEW inbound message arrives on the read conversation.
-        result_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _inbound(chat_id=_CHAT_READ, message_id=_MSG_FIRST)
         )
+        result_id = outcome.conversation_id
 
         # Assert: unread was 0 → this starts a fresh burst → the id is returned.
         assert result_id == conv_id, "a previously-read conversation restarts the burst"
@@ -110,9 +112,10 @@ class SupportServiceHandleInboundBurstTest:
         service = SupportService(db_session, redis_client)
 
         # Act: a follow-up inbound arrives while still unread.
-        result_id, _snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _inbound(chat_id=_CHAT_UNREAD, message_id=_MSG_FIRST)
         )
+        result_id = outcome.conversation_id
 
         # Assert: already unread → no re-ping (debounced) → None.
         assert result_id is None, "a follow-up while already unread must not re-ping"
@@ -127,9 +130,10 @@ class SupportServiceHandleInboundBurstTest:
         await service.handle_inbound(_inbound(chat_id=_CHAT_DUP, message_id=_MSG_FIRST))
 
         # Act: the SAME update (same chat + tg_message_id) is delivered again.
-        result_id, snippet = await service.handle_inbound(
+        outcome = await service.handle_inbound(
             _inbound(chat_id=_CHAT_DUP, message_id=_MSG_FIRST)
         )
+        result_id, snippet = outcome.conversation_id, outcome.notify_snippet
 
         # Assert: dedup short-circuits before any burst decision → None + empty snippet.
         assert result_id is None, "a re-delivered update must dedup and not re-ping"
