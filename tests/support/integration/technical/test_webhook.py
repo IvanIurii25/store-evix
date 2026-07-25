@@ -7,11 +7,14 @@ message creation with the inbox snapshot, dedup of a re-delivered update, and
 snapshot refresh + append on an existing chat.
 """
 
+from unittest.mock import Mock
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.api.routers.telegram as telegram_router
 from app.core.config import settings
 from app.models.support import SupportConversation, SupportMessage
 
@@ -23,6 +26,10 @@ _TEST_SECRET: str = "test-secret"
 # Telegram ids used by the update fixtures.
 _CHAT_ID: int = 555
 _MESSAGE_ID: int = 10
+# Staff group chat id used by the enqueue tests.
+_STAFF_CHAT_ID: str = "-100999"
+# Snippet cap the webhook applies to the enqueued text.
+_SNIPPET_LEN: int = 200
 
 
 def _update(*, message_id: int = _MESSAGE_ID, username: str = "ana") -> dict:
@@ -254,3 +261,119 @@ class TelegramWebhookInboundTest:
         ).scalar_one()
         assert conv.customer_username == "ana_new", "snapshot must refresh on append"
         assert conv.unread_count == 2, "two unread inbound messages"
+
+
+def _nameless_update(*, message_id: int = _MESSAGE_ID) -> dict:
+    """A valid text update whose sender has no first_name / username."""
+    return {
+        "update_id": 1,
+        "message": {
+            "message_id": message_id,
+            "chat": {"id": _CHAT_ID},
+            "from": {"id": _CHAT_ID, "language_code": "ro"},
+            "text": "Salut",
+        },
+    }
+
+
+class TelegramWebhookNotifyStaffTest:
+    """Webhook enqueues ``notify_staff.delay`` once per fresh unread burst."""
+
+    async def test_fresh_inbound_enqueues_notify_once(
+        self,
+        guest_client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Arrange: valid secret, a configured staff chat, and a spied task.
+        monkeypatch.setattr(settings, "telegram_webhook_secret", _TEST_SECRET)
+        monkeypatch.setattr(settings, "telegram_staff_chat_id", _STAFF_CHAT_ID)
+        notify = Mock()
+        monkeypatch.setattr(telegram_router, "notify_staff", notify)
+
+        # Act: one valid inbound to a fresh chat.
+        resp = await guest_client.post(
+            _WEBHOOK_URL,
+            json=_update(),
+            headers={_SECRET_HEADER: _TEST_SECRET},
+        )
+
+        # Assert: acked, and the ping was enqueued once with (id, name, snippet).
+        assert resp.status_code == 200, resp.text
+        conv = (
+            await db_session.execute(
+                select(SupportConversation).where(
+                    SupportConversation.tg_chat_id == _CHAT_ID
+                )
+            )
+        ).scalar_one()
+        notify.delay.assert_called_once_with(conv.id, "Ana", "Salut"[:_SNIPPET_LEN])
+
+    async def test_name_falls_back_when_sender_anonymous(
+        self,
+        guest_client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Arrange: a sender with neither first_name nor username.
+        monkeypatch.setattr(settings, "telegram_webhook_secret", _TEST_SECRET)
+        monkeypatch.setattr(settings, "telegram_staff_chat_id", _STAFF_CHAT_ID)
+        notify = Mock()
+        monkeypatch.setattr(telegram_router, "notify_staff", notify)
+
+        # Act: post the nameless inbound.
+        resp = await guest_client.post(
+            _WEBHOOK_URL,
+            json=_nameless_update(),
+            headers={_SECRET_HEADER: _TEST_SECRET},
+        )
+
+        # Assert: the ping name falls back to the generic label.
+        assert resp.status_code == 200, resp.text
+        _, name, _snippet = notify.delay.call_args.args
+        assert name == "клиент", "name must fall back when no name/username present"
+
+    async def test_second_inbound_same_chat_not_enqueued_again(
+        self,
+        guest_client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Arrange: valid secret + staff chat + spied task.
+        monkeypatch.setattr(settings, "telegram_webhook_secret", _TEST_SECRET)
+        monkeypatch.setattr(settings, "telegram_staff_chat_id", _STAFF_CHAT_ID)
+        notify = Mock()
+        monkeypatch.setattr(telegram_router, "notify_staff", notify)
+        headers = {_SECRET_HEADER: _TEST_SECRET}
+
+        # Act: two inbounds on the same chat with no read in between → still unread.
+        await guest_client.post(
+            _WEBHOOK_URL, json=_update(message_id=10), headers=headers
+        )
+        await guest_client.post(
+            _WEBHOOK_URL, json=_update(message_id=11), headers=headers
+        )
+
+        # Assert: debounced to a single ping for the burst.
+        assert notify.delay.call_count == 1, "one ping per unread burst (debounced)"
+
+    async def test_no_enqueue_when_staff_chat_unset(
+        self,
+        guest_client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Arrange: valid secret, but no staff chat configured (default empty).
+        monkeypatch.setattr(settings, "telegram_webhook_secret", _TEST_SECRET)
+        monkeypatch.setattr(settings, "telegram_staff_chat_id", "")
+        notify = Mock()
+        monkeypatch.setattr(telegram_router, "notify_staff", notify)
+
+        # Act: a fresh inbound that would otherwise ping.
+        resp = await guest_client.post(
+            _WEBHOOK_URL,
+            json=_update(),
+            headers={_SECRET_HEADER: _TEST_SECRET},
+        )
+
+        # Assert: acked, but nothing enqueued (no staff chat → no ping).
+        assert resp.status_code == 200, resp.text
+        notify.delay.assert_not_called()

@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     # header value does not match this setting.
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
+    # Telegram chat id of the internal staff/operators group; when set,
+    # new-support-message notifications are posted there. Empty → feature off
+    # (no-op).
+    telegram_staff_chat_id: str = ""
     # Support conversations inactive for longer than this are purged (storage
     # limitation, LP195/2024 Art.5). ~12 months, consistent with the
     # customer-inquiry retention default.

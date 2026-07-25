@@ -10,8 +10,9 @@ Everything else answers ``200`` with ``{"ok": True}``, even for malformed or
 non-text updates: Telegram retries any webhook that does not promptly ack, so a
 fast, always-successful reply for updates this MVP doesn't handle is a feature,
 not a swallowed error. The inbound path is intentionally light (persist + publish
-a live event). Heavy or failable side-work — staff-group notifications,
-enrichment — is a later phase and would move to Celery, off the ack path.
+a live event). Heavy or failable side-work — the staff-group notification — is
+offloaded to Celery (``support.notify_staff`` via ``.delay``, off the ack path,
+per the fast-200 rule).
 """
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -24,6 +25,7 @@ from app.core.db import get_session
 from app.core.redis import get_redis
 from app.core.telegram import parse_inbound, verify_webhook_secret
 from app.services.support_service import SupportService
+from app.tasks.support import notify_staff
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 
@@ -45,9 +47,11 @@ async def telegram_webhook(
 
     Verifies the secret token, parses the update and — when it's a private text
     message this MVP handles — persists it and publishes a live inbox event via
-    :class:`~app.services.support_service.SupportService`. Any non-handled or
-    malformed update is ignored and still answered ``200`` so Telegram stops
-    retrying.
+    :class:`~app.services.support_service.SupportService`. When that message
+    starts a fresh unread burst (and a staff chat is configured), enqueues the
+    ``support.notify_staff`` Celery task so the heavy/failable staff-group send
+    happens off the ack path. Any non-handled or malformed update is ignored and
+    still answered ``200`` so Telegram stops retrying.
 
     Args:
         request: The incoming webhook request (raw update in the JSON body).
@@ -77,5 +81,8 @@ async def telegram_webhook(
     if inbound is None:
         return {"ok": True}
 
-    await SupportService(session, redis).handle_inbound(inbound)
+    conversation_id = await SupportService(session, redis).handle_inbound(inbound)
+    if conversation_id is not None and settings.telegram_staff_chat_id:
+        name = inbound.customer_name or inbound.customer_username or "клиент"
+        notify_staff.delay(conversation_id, name, inbound.text[:200])
     return {"ok": True}

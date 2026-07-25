@@ -69,7 +69,7 @@ class SupportService:
         self.repo = SupportRepository(session)
         self.telegram = telegram or telegram_client
 
-    async def handle_inbound(self, inbound: InboundMessage) -> None:
+    async def handle_inbound(self, inbound: InboundMessage) -> int | None:
         """Persist an inbound Telegram message and publish a live event (§).
 
         Finds or creates the conversation, refreshes the customer snapshot,
@@ -78,8 +78,16 @@ class SupportService:
 
         Args:
             inbound: The parsed inbound message.
+
+        Returns:
+            int | None: The ``conversation_id`` when this message starts a fresh
+                unread burst (the conversation was new or previously read), so
+                the caller should ping staff once. ``None`` for a re-delivered /
+                deduped update or a follow-up while the conversation was already
+                unread — debouncing to one ping per unread burst.
         """
         conv = await self.repo.get_by_tg_chat_id(inbound.chat_id)
+        is_new = conv is None
         if conv is None:
             conv = await self.repo.create_conversation(
                 tg_chat_id=inbound.chat_id,
@@ -92,8 +100,10 @@ class SupportService:
             conv.customer_username = inbound.customer_username
             conv.lang = inbound.lang
 
-        if await self.repo.message_exists(conv.id, inbound.message_id):
-            return
+            if await self.repo.message_exists(conv.id, inbound.message_id):
+                return None
+
+        fresh_burst = is_new or (conv.unread_count or 0) == 0
 
         await self.repo.add_message(
             conversation_id=conv.id,
@@ -104,6 +114,7 @@ class SupportService:
         await self.repo.bump_activity(conv, inbound=True)
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "inbound")
+        return conv.id if fresh_burst else None
 
     async def reply(
         self,

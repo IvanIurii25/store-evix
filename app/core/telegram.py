@@ -107,6 +107,27 @@ async def send_message(chat_id: int, text: str) -> int | None:
     return sent.message_id
 
 
+async def send_to_chat_isolated(chat_id: str, text: str) -> None:
+    """Send a message via a throwaway ``Bot``, closing its session after.
+
+    For use from Celery tasks, where the shared module-level bot singleton's
+    session is bound to the web app's event loop and cannot be reused across the
+    fresh ``asyncio.run`` loop each task spins up. Builds a fresh ``Bot``, sends,
+    and closes its session in a ``finally``.
+
+    Args:
+        chat_id: The target Telegram chat id (staff group).
+        text: The message body.
+    """
+    if not settings.telegram_bot_token:
+        return
+    bot = Bot(token=settings.telegram_bot_token)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text)
+    finally:
+        await bot.session.close()
+
+
 def verify_webhook_secret(header_value: str | None) -> bool:
     """Constant-time compare of the webhook secret header against the config.
 
