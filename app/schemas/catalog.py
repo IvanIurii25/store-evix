@@ -135,6 +135,11 @@ class ProductDetail(BaseModel):
     price: Decimal
     old_price: Decimal | None = None
     in_stock: bool
+    # Honest social-proof signal: real number of distinct *live* carts (draft
+    # status) currently holding this product. Never randomized/inflated. The
+    # storefront decides whether to surface it (shows only above a threshold);
+    # the backend always returns the true count (0 when none).
+    in_cart_count: int = 0
     category_id: int
     breadcrumbs: list[Breadcrumb] = Field(default_factory=list)
     attributes: list[AttributeGroup] = Field(default_factory=list)

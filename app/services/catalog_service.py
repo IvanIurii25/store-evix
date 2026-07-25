@@ -479,6 +479,7 @@ class CatalogService:
         breadcrumbs: list[Breadcrumb] = []
         if category is not None:
             breadcrumbs = await self._build_breadcrumbs(category.path, lang)
+        in_cart_count = await self.repo.count_live_carts_with_product(product.id)
 
         return ProductDetail(
             id=product.id,
@@ -491,6 +492,7 @@ class CatalogService:
             price=product.price,
             old_price=product.old_price,
             in_stock=product.qty > 0,
+            in_cart_count=in_cart_count,
             category_id=product.category_id,
             breadcrumbs=breadcrumbs,
             attributes=attributes,

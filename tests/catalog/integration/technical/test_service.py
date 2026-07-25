@@ -5,12 +5,80 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.models.cart import Cart, CartItem
 from app.models.catalog import ProductCard
 from app.services.catalog_service import (
     CatalogService,
     NotFoundError,
     PublicationError,
 )
+
+
+async def _seed_product(seed, *, product_id: int, slug: str) -> None:
+    """Insert a publishable two-lang product for in-cart-count tests."""
+    await seed["add_product"](
+        seed["session"],
+        product_id=product_id,
+        category_id=2,
+        code=f"P-CART-{product_id}",
+        price=Decimal("100.00"),
+        qty=5,
+        slugs={"ru": f"{slug}-ru", "ro": f"{slug}-ro"},
+        names={"ru": "Товар", "ro": "Produs"},
+    )
+    await seed["session"].flush()
+
+
+async def _add_cart(seed, *, product_id: int, status: str) -> None:
+    """Persist one cart of ``status`` holding ``product_id``."""
+    session = seed["session"]
+    cart = Cart(status=status)
+    session.add(cart)
+    await session.flush()
+    session.add(CartItem(cart_id=cart.id, product_id=product_id, qty=1))
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_in_cart_count_zero_when_no_carts(seed):
+    """PDP in_cart_count is 0 when no cart holds the product."""
+    await seed["build_tree"]()
+    await _seed_product(seed, product_id=400, slug="c-zero")
+    service: CatalogService = seed["service"]
+
+    detail = await service.get_product("c-zero-ro", "ro")
+
+    assert detail.in_cart_count == 0
+
+
+@pytest.mark.asyncio
+async def test_in_cart_count_counts_live_carts(seed):
+    """in_cart_count reflects the real number of distinct draft carts (1 and N)."""
+    await seed["build_tree"]()
+    await _seed_product(seed, product_id=401, slug="c-live")
+    for _ in range(3):
+        await _add_cart(seed, product_id=401, status="draft")
+    service: CatalogService = seed["service"]
+
+    detail = await service.get_product("c-live-ro", "ro")
+
+    assert detail.in_cart_count == 3
+
+
+@pytest.mark.asyncio
+async def test_in_cart_count_excludes_converted_and_abandoned(seed):
+    """Converted/abandoned carts are not counted — only live (draft) carts."""
+    await seed["build_tree"]()
+    await _seed_product(seed, product_id=402, slug="c-dead")
+    await _add_cart(seed, product_id=402, status="draft")
+    await _add_cart(seed, product_id=402, status="converted")
+    await _add_cart(seed, product_id=402, status="abandoned")
+    service: CatalogService = seed["service"]
+
+    detail = await service.get_product("c-dead-ro", "ro")
+
+    # Only the single draft cart counts.
+    assert detail.in_cart_count == 1
 
 
 @pytest.mark.asyncio

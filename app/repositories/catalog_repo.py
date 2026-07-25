@@ -15,6 +15,7 @@ from decimal import Decimal
 from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.cart import Cart, CartItem
 from app.models.catalog import (
     Attribute,
     AttributeTranslation,
@@ -485,6 +486,30 @@ class CatalogRepository:
             .order_by(Media.position, Media.id)
         )
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def count_live_carts_with_product(self, product_id: int) -> int:
+        """Count distinct live carts currently holding a product (honest signal).
+
+        "Live" = a cart in ``draft`` status (an active, not-yet-converted and
+        not-abandoned cart). One cheap aggregate: ``COUNT(DISTINCT cart_id)`` over
+        ``cart_item`` joined to ``cart``. No N+1 — one round-trip per PDP.
+
+        Args:
+            product_id: Product primary key.
+
+        Returns:
+            int: Number of distinct live carts containing the product (``0`` if
+                none). This is a *real* count — never randomized or inflated.
+        """
+        stmt = (
+            select(func.count(func.distinct(CartItem.cart_id)))
+            .join(Cart, Cart.id == CartItem.cart_id)
+            .where(
+                CartItem.product_id == product_id,
+                Cart.status == "draft",
+            )
+        )
+        return (await self.session.execute(stmt)).scalar_one()
 
     async def get_product_attributes(
         self,

@@ -146,6 +146,8 @@ async def test_api_pdp_both_slugs(seed, client):
     body = resp.json()
     assert body["id"] == 300
     assert body["in_stock"] is True
+    # Honest social-proof field is additive and present; 0 with no live carts.
+    assert body["in_cart_count"] == 0
     assert body["slug"] == "pdp-ro"
     # both language slugs present for the switcher
     slug_map = {entry["lang"]: entry["slug"] for entry in body["slugs"]}
