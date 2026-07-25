@@ -10,7 +10,7 @@ updates can be re-delivered, so :meth:`SupportRepository.message_exists` gives
 the service a de-duplication check keyed on ``(conversation_id, tg_message_id)``.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -276,6 +276,161 @@ class SupportRepository:
             .where(SupportMessage.conversation_id == conversation_id)
         )
         return int((await self.session.scalar(stmt)) or 0)
+
+    async def metrics_summary(self, cutoff: datetime) -> dict:
+        """Return conversation counts for the support-metrics overview.
+
+        Args:
+            cutoff: Only conversations created at/after this instant count toward
+                ``new_in_period`` (the window boundary).
+
+        Returns:
+            dict: ``{"total", "new_in_period", "open", "pending", "closed"}`` —
+            ``total`` and ``new_in_period`` are period-scoped counts; the status
+            keys are the *current* per-status conversation counts (missing
+            statuses default to ``0``).
+        """
+        total = (
+            await self.session.scalar(
+                select(func.count()).select_from(SupportConversation)
+            )
+        ) or 0
+        new_in_period = (
+            await self.session.scalar(
+                select(func.count())
+                .select_from(SupportConversation)
+                .where(SupportConversation.created_at >= cutoff)
+            )
+        ) or 0
+        status_stmt = select(
+            SupportConversation.status, func.count().label("n")
+        ).group_by(SupportConversation.status)
+        by_status = {
+            row.status: int(row.n) for row in (await self.session.execute(status_stmt))
+        }
+        return {
+            "total": int(total),
+            "new_in_period": int(new_in_period),
+            "open": by_status.get("open", 0),
+            "pending": by_status.get("pending", 0),
+            "closed": by_status.get("closed", 0),
+        }
+
+    async def unanswered_count(self) -> int:
+        """Return how many non-closed conversations await an operator reply.
+
+        A conversation counts when it is not ``closed`` and its most recent
+        message (highest ``created_at``) is inbound (``direction = 'in'``) — i.e.
+        the customer spoke last and nobody has replied. Conversations with no
+        messages do not count.
+
+        Returns:
+            int: The number of conversations whose last message is inbound.
+        """
+        latest = (
+            select(
+                SupportMessage.conversation_id.label("conversation_id"),
+                func.max(SupportMessage.created_at).label("last_at"),
+            )
+            .group_by(SupportMessage.conversation_id)
+            .subquery()
+        )
+        last_msg = (
+            select(SupportMessage.direction)
+            .where(
+                SupportMessage.conversation_id == latest.c.conversation_id,
+                SupportMessage.created_at == latest.c.last_at,
+            )
+            .order_by(SupportMessage.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(func.count())
+            .select_from(SupportConversation)
+            .join(latest, latest.c.conversation_id == SupportConversation.id)
+            .where(
+                SupportConversation.status != "closed",
+                last_msg == "in",
+            )
+        )
+        return int((await self.session.scalar(stmt)) or 0)
+
+    async def avg_first_response_seconds(self, cutoff: datetime) -> float | None:
+        """Return the average first-response time (seconds) over the window.
+
+        Over conversations *created* at/after ``cutoff`` that received a real
+        operator reply: per conversation take the first inbound message time and
+        the first outbound message time sent by an operator (``sender_staff_id``
+        set), keep only conversations where both exist and the reply is not
+        before the question, and average the differences.
+
+        Args:
+            cutoff: Only conversations created at/after this instant are counted.
+
+        Returns:
+            float | None: The average first-response time in seconds, or ``None``
+            when no qualifying conversation exists in the window.
+        """
+        first_times = (
+            select(
+                SupportMessage.conversation_id.label("conversation_id"),
+                func.min(SupportMessage.created_at)
+                .filter(SupportMessage.direction == "in")
+                .label("t_in"),
+                func.min(SupportMessage.created_at)
+                .filter(
+                    SupportMessage.direction == "out",
+                    SupportMessage.sender_staff_id.is_not(None),
+                )
+                .label("t_out"),
+            )
+            .group_by(SupportMessage.conversation_id)
+            .subquery()
+        )
+        stmt = (
+            select(
+                func.avg(
+                    func.extract("epoch", first_times.c.t_out - first_times.c.t_in)
+                )
+            )
+            .select_from(SupportConversation)
+            .join(
+                first_times,
+                first_times.c.conversation_id == SupportConversation.id,
+            )
+            .where(
+                SupportConversation.created_at >= cutoff,
+                first_times.c.t_in.is_not(None),
+                first_times.c.t_out.is_not(None),
+                first_times.c.t_out >= first_times.c.t_in,
+            )
+        )
+        avg = await self.session.scalar(stmt)
+        return float(avg) if avg is not None else None
+
+    async def new_conversations_series(
+        self,
+        cutoff: datetime,
+    ) -> list[tuple[date, int]]:
+        """Return new conversations per day since ``cutoff``, ascending.
+
+        Args:
+            cutoff: Only conversations created at/after this instant are counted.
+
+        Returns:
+            list[tuple[date, int]]: ``(day, count)`` pairs, one per day that had
+            at least one new conversation, ordered by day.
+        """
+        day = func.date_trunc("day", SupportConversation.created_at).label("day")
+        stmt = (
+            select(day, func.count().label("count"))
+            .where(SupportConversation.created_at >= cutoff)
+            .group_by(day)
+            .order_by(day)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [(row.day.date(), int(row.count)) for row in rows]
 
     async def set_status(
         self,

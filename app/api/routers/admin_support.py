@@ -20,6 +20,7 @@ integrator when mounting):
 """
 
 import json
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -44,6 +45,8 @@ from app.schemas.support import (
     MessageOut,
     ReplyIn,
     StatusIn,
+    SupportMetricsOut,
+    SupportMetricsPoint,
     ThreadOut,
 )
 from app.services.support_service import (
@@ -118,6 +121,50 @@ async def list_conversations(
         total=total,
         page=page,
         page_size=DEFAULT_PAGE_SIZE,
+    )
+
+
+@router.get("/metrics", response_model=SupportMetricsOut)
+async def metrics(
+    days: int = Query(
+        default=30,
+        ge=1,
+        le=365,
+        description="Trailing window size in days for the metrics overview.",
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> SupportMetricsOut:
+    """Return the support-metrics overview for the admin/director.
+
+    A read-only aggregation over the existing support tables: conversation
+    totals and current status split, how many conversations still await an
+    operator reply, the average first-response time, and the per-day new-
+    conversation series — all scoped to the trailing ``days`` window where
+    period-relative.
+
+    Args:
+        days: Trailing window size in days (1-365, default 30).
+        session: Injected async DB session.
+
+    Returns:
+        SupportMetricsOut: The assembled metrics overview.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    repo = SupportRepository(session)
+    summary = await repo.metrics_summary(cutoff)
+    unanswered = await repo.unanswered_count()
+    avg_first_response = await repo.avg_first_response_seconds(cutoff)
+    series = await repo.new_conversations_series(cutoff)
+    return SupportMetricsOut(
+        total=summary["total"],
+        new_in_period=summary["new_in_period"],
+        open=summary["open"],
+        pending=summary["pending"],
+        closed=summary["closed"],
+        unanswered=unanswered,
+        avg_first_response_seconds=avg_first_response,
+        series=[SupportMetricsPoint(day=d, count=c) for d, c in series],
+        days=days,
     )
 
 

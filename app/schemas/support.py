@@ -11,7 +11,7 @@ limit) and :class:`StatusIn` (a conversation status change, validated against
 :data:`~app.models.support.SUPPORT_STATUSES`).
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -135,6 +135,27 @@ class StatusIn(BaseModel):
         if value not in SUPPORT_STATUSES:
             raise ValueError(f"status must be one of {_STATUS_CHOICES}")
         return value
+
+
+class SupportMetricsPoint(BaseModel):
+    """One day bucket of new conversations for the metrics series."""
+
+    day: date
+    count: int
+
+
+class SupportMetricsOut(BaseModel):
+    """Support-metrics overview for the admin/director (§ support metrics)."""
+
+    total: int
+    new_in_period: int
+    open: int
+    pending: int
+    closed: int
+    unanswered: int
+    avg_first_response_seconds: float | None
+    series: list[SupportMetricsPoint]
+    days: int
 
 
 class CannedOut(BaseModel):
