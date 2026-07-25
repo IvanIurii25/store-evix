@@ -25,9 +25,11 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.core.telegram as telegram_client
+from app.core.config import settings
 from app.core.support_events import publish_support_event
 from app.core.telegram import InboundMessage
 from app.models.support import SupportConversation, SupportMessage
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.support_repo import SupportRepository
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,9 @@ class SupportService:
             if await self.repo.message_exists(conv.id, inbound.message_id):
                 return None
 
+        if inbound.text.startswith("/start"):
+            return await self._handle_start(conv, is_new, inbound)
+
         fresh_burst = is_new or (conv.unread_count or 0) == 0
 
         await self.repo.add_message(
@@ -115,6 +120,110 @@ class SupportService:
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "inbound")
         return conv.id if fresh_burst else None
+
+    async def _handle_start(
+        self,
+        conv: SupportConversation,
+        is_new: bool,
+        inbound: InboundMessage,
+    ) -> int | None:
+        """Handle a Telegram ``/start [payload]`` deep-link opening the chat (§).
+
+        A storefront "Написать в поддержку" link opens the bot with a payload
+        (``p<id>`` for a product, ``site``/empty otherwise). Telegram delivers it
+        as the client's first message ``"/start <payload>"``. Instead of storing
+        that raw command, resolves the payload into a human context line the
+        operator sees, records it as the opening inbound message and sends an
+        auto-greeting as an outbound system message. Always treated as a
+        conversation-start, so staff are pinged.
+
+        Args:
+            conv: The find-or-created conversation (snapshot already refreshed).
+            is_new: Whether the conversation was created by this update.
+            inbound: The parsed ``/start`` message.
+
+        Returns:
+            int | None: The ``conversation_id`` to ping staff on, or ``None`` for
+                a re-delivered ``/start`` already recorded.
+        """
+        if not is_new and await self.repo.message_exists(conv.id, inbound.message_id):
+            return None
+
+        payload = inbound.text[len("/start") :].strip()
+        context, product_name = await self._resolve_start_context(payload, conv.lang)
+
+        await self.repo.add_message(
+            conversation_id=conv.id,
+            direction="in",
+            text=context,
+            tg_message_id=inbound.message_id,
+        )
+        await self.repo.bump_activity(conv, inbound=True)
+
+        greeting = self._start_greeting(product_name)
+        msg = await self.repo.add_message(
+            conversation_id=conv.id,
+            direction="out",
+            text=greeting,
+        )
+        try:
+            tg_id = await self.telegram.send_message(conv.tg_chat_id, greeting)
+            msg.tg_message_id = tg_id
+            msg.delivery = "sent"
+        except Exception:  # noqa: BLE001 — a failed send is a saved, badged message
+            logger.exception(
+                "support: failed to send /start greeting for conversation %s", conv.id
+            )
+            msg.delivery = "failed"
+
+        await self.session.commit()
+        await publish_support_event(self.redis, conv.id, "inbound")
+        return conv.id
+
+    async def _resolve_start_context(
+        self,
+        payload: str,
+        lang: str | None,
+    ) -> tuple[str, str | None]:
+        """Resolve a ``/start`` payload into an operator context line (§).
+
+        ``p<id>`` resolves to the product card (its name + a storefront link);
+        anything else (``site`` / empty / unknown) yields a generic line.
+
+        Args:
+            payload: The stripped ``/start`` payload (``""``, ``"site"``, ``"p123"``…).
+            lang: The conversation's language snapshot, or ``None``.
+
+        Returns:
+            tuple[str, str | None]: ``(context_line, product_name)`` — the product
+                name is ``None`` for the generic case.
+        """
+        resolved_lang = lang or settings.default_lang
+        if payload.startswith("p") and payload[1:].isdigit():
+            card = await CatalogRepository(self.session).get_card(
+                int(payload[1:]), resolved_lang
+            )
+            if card is not None:
+                url = f"{settings.storefront_base_url}/{resolved_lang}/p/{card.slug}"
+                return (f"🔗 Обращение по товару: «{card.name}» — {url}", card.name)
+        return ("🔗 Обращение с сайта", None)
+
+    def _start_greeting(self, product_name: str | None) -> str:
+        """Build the auto-greeting sent back to the customer on ``/start``.
+
+        Args:
+            product_name: The resolved product name, or ``None`` for the generic
+                greeting.
+
+        Returns:
+            str: The greeting text.
+        """
+        if product_name:
+            return (
+                f"Здравствуйте! Вы пишете по товару «{product_name}». "
+                "Напишите ваш вопрос — мы на связи."
+            )
+        return "Здравствуйте! Напишите ваш вопрос — мы на связи."
 
     async def reply(
         self,
