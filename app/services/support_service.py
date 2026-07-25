@@ -90,7 +90,7 @@ class SupportService:
         self.repo = SupportRepository(session)
         self.telegram = telegram or telegram_client
 
-    async def handle_inbound(self, inbound: InboundMessage) -> int | None:
+    async def handle_inbound(self, inbound: InboundMessage) -> tuple[int | None, str]:
         """Persist an inbound Telegram message and publish a live event (§).
 
         Finds or creates the conversation, refreshes the customer snapshot,
@@ -101,11 +101,15 @@ class SupportService:
             inbound: The parsed inbound message.
 
         Returns:
-            int | None: The ``conversation_id`` when this message starts a fresh
+            tuple[int | None, str]: ``(conversation_id, notify_snippet)``. The
+                ``conversation_id`` is set only when this message starts a fresh
                 unread burst (the conversation was new or previously read), so
-                the caller should ping staff once. ``None`` for a re-delivered /
-                deduped update or a follow-up while the conversation was already
-                unread — debouncing to one ping per unread burst.
+                the caller should ping staff once; it is ``None`` for a
+                re-delivered / deduped update or a follow-up while the
+                conversation was already unread (debouncing to one ping per
+                burst). ``notify_snippet`` is the staff-ping text: the raw
+                message for a normal inbound, the friendly ``/start`` context
+                line for a deep-link, and ``""`` for a deduped update.
         """
         conv = await self.repo.get_by_tg_chat_id(inbound.chat_id)
         is_new = conv is None
@@ -122,7 +126,7 @@ class SupportService:
             conv.lang = inbound.lang
 
             if await self.repo.message_exists(conv.id, inbound.message_id):
-                return None
+                return (None, "")
 
         if inbound.text.startswith("/start"):
             return await self._handle_start(conv, is_new, inbound)
@@ -138,14 +142,14 @@ class SupportService:
         await self.repo.bump_activity(conv, inbound=True)
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "inbound")
-        return conv.id if fresh_burst else None
+        return (conv.id if fresh_burst else None, inbound.text)
 
     async def _handle_start(
         self,
         conv: SupportConversation,
         is_new: bool,
         inbound: InboundMessage,
-    ) -> int | None:
+    ) -> tuple[int | None, str]:
         """Handle a Telegram ``/start [payload]`` deep-link opening the chat (§).
 
         A storefront "Написать в поддержку" link opens the bot with a payload
@@ -162,11 +166,13 @@ class SupportService:
             inbound: The parsed ``/start`` message.
 
         Returns:
-            int | None: The ``conversation_id`` to ping staff on, or ``None`` for
-                a re-delivered ``/start`` already recorded.
+            tuple[int | None, str]: ``(conversation_id, context)`` — the
+                ``conversation_id`` to ping staff on with the friendly context
+                line as the snippet, or ``(None, "")`` for a re-delivered
+                ``/start`` already recorded.
         """
         if not is_new and await self.repo.message_exists(conv.id, inbound.message_id):
-            return None
+            return (None, "")
 
         payload = inbound.text[len("/start") :].strip()
         context, greeting_name, linked_order_id = await self._resolve_start_context(
@@ -201,7 +207,7 @@ class SupportService:
 
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "inbound")
-        return conv.id
+        return (conv.id, context)
 
     async def _resolve_start_context(
         self,

@@ -107,16 +107,22 @@ async def _seed_product_card(session: AsyncSession) -> int:
 async def _thread_texts(session: AsyncSession, conversation_id: int) -> list[str]:
     """Return every stored message text for a conversation, oldest first."""
     rows = (
-        await session.execute(
-            select(SupportMessage)
-            .where(SupportMessage.conversation_id == conversation_id)
-            .order_by(SupportMessage.id)
+        (
+            await session.execute(
+                select(SupportMessage)
+                .where(SupportMessage.conversation_id == conversation_id)
+                .order_by(SupportMessage.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [row.text for row in rows]
 
 
-async def _messages(session: AsyncSession, conversation_id: int) -> list[SupportMessage]:
+async def _messages(
+    session: AsyncSession, conversation_id: int
+) -> list[SupportMessage]:
     """Return every stored message for a conversation, oldest first."""
     return list(
         (
@@ -125,7 +131,9 @@ async def _messages(session: AsyncSession, conversation_id: int) -> list[Support
                 .where(SupportMessage.conversation_id == conversation_id)
                 .order_by(SupportMessage.id)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
 
 
@@ -142,12 +150,15 @@ class SupportServiceStartProductTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the opening "/start p<id>".
-        conv_id = await service.handle_inbound(
+        conv_id, snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_PRODUCT, payload=f"p{product_id}")
         )
 
         # Assert: a fresh conversation → its id is returned (staff get pinged).
         assert conv_id is not None, "opening /start starts a conversation → returns id"
+        # The staff-ping snippet is the friendly product context, not the raw command.
+        assert not snippet.startswith("/start"), "snippet must not be the raw command"
+        assert _PRODUCT_NAME in snippet, "snippet is the 'по товару' product context"
 
         messages = await _messages(db_session, conv_id)
         assert len(messages) == 2, "exactly the context inbound + greeting outbound"
@@ -173,15 +184,15 @@ class SupportServiceStartProductTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the opening "/start p<id>".
-        conv_id = await service.handle_inbound(
+        conv_id, _snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_PRODUCT, payload=f"p{product_id}")
         )
 
         # Assert: the raw command text is never persisted as a message.
         texts = await _thread_texts(db_session, conv_id)
-        assert all(
-            not text.startswith("/start") for text in texts
-        ), "the raw /start command must not be stored as a message"
+        assert all(not text.startswith("/start") for text in texts), (
+            "the raw /start command must not be stored as a message"
+        )
 
     async def test_greeting_persists_sent_with_no_tg_id(
         self,
@@ -193,7 +204,7 @@ class SupportServiceStartProductTest:
         service = SupportService(db_session, redis_client)
 
         # Act: open the chat with a product deep-link.
-        conv_id = await service.handle_inbound(
+        conv_id, _snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_PRODUCT, payload=f"p{product_id}")
         )
 
@@ -223,12 +234,14 @@ class SupportServiceStartGenericTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the bare-or-site "/start".
-        conv_id = await service.handle_inbound(
+        conv_id, snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_SITE, payload=payload)
         )
 
         # Assert: generic context inbound + a greeting naming no product.
         assert conv_id is not None, "opening /start returns the conversation id"
+        # The staff-ping snippet is the generic context, NOT the raw "/start site".
+        assert snippet == "🔗 Обращение с сайта", "snippet is the generic context line"
         context, greeting = await _messages(db_session, conv_id)
         assert self._GENERIC_CONTEXT in context.text, "generic 'site' context line"
         assert _PRODUCT_NAME not in greeting.text, "generic greeting names no product"
@@ -242,15 +255,15 @@ class SupportServiceStartGenericTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest "/start p<missing_id>".
-        conv_id = await service.handle_inbound(
-            _start_inbound(
-                chat_id=_CHAT_MISSING, payload=f"p{_MISSING_PRODUCT_ID}"
-            )
+        conv_id, _snippet = await service.handle_inbound(
+            _start_inbound(chat_id=_CHAT_MISSING, payload=f"p{_MISSING_PRODUCT_ID}")
         )
 
         # Assert: an unresolved product resolves like the generic "site" case.
         context, greeting = await _messages(db_session, conv_id)
-        assert self._GENERIC_CONTEXT in context.text, "missing product → generic context"
+        assert self._GENERIC_CONTEXT in context.text, (
+            "missing product → generic context"
+        )
         assert _PRODUCT_NAME not in greeting.text, "missing product → generic greeting"
 
 
@@ -264,18 +277,19 @@ class SupportServiceStartEdgeTest:
     ) -> None:
         # Arrange: a first "/start site" establishes the conversation.
         service = SupportService(db_session, redis_client)
-        conv_id = await service.handle_inbound(
+        conv_id, _snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_DUP, payload="site")
         )
         before = await _count_messages(db_session, conv_id)
 
         # Act: the SAME update (same chat + tg_message_id) is delivered again.
-        result = await service.handle_inbound(
+        result_id, snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_DUP, payload="site")
         )
 
-        # Assert: the re-delivery dedups — no id, no extra messages.
-        assert result is None, "a re-delivered /start must dedup and not re-ping"
+        # Assert: the re-delivery dedups — no id, empty snippet, no extra messages.
+        assert result_id is None, "a re-delivered /start must dedup and not re-ping"
+        assert snippet == "", "a deduped /start carries no ping snippet"
         after = await _count_messages(db_session, conv_id)
         assert after == before, "dedup must not append duplicate messages"
 
@@ -293,17 +307,21 @@ class SupportServiceStartEdgeTest:
         service = SupportService(db_session, redis_client)
 
         # Act: open the chat — the greeting send fails but must not raise.
-        conv_id = await service.handle_inbound(
+        conv_id, _snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_FAIL, payload="site")
         )
 
         # Assert: the greeting is saved with a "failed" delivery badge, call succeeds.
-        assert conv_id is not None, "a failed greeting send is not an error to the caller"
+        assert conv_id is not None, (
+            "a failed greeting send is not an error to the caller"
+        )
         outbound = [
             m for m in await _messages(db_session, conv_id) if m.direction == "out"
         ]
         assert len(outbound) == 1, "the greeting persists despite the send failure"
-        assert outbound[0].delivery == "failed", "a failed send is a badged saved message"
+        assert outbound[0].delivery == "failed", (
+            "a failed send is a badged saved message"
+        )
 
 
 async def _count_messages(session: AsyncSession, conversation_id: int) -> int:

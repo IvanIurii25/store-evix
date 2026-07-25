@@ -50,19 +50,28 @@ def _update(*, message_id: int = _MESSAGE_ID, username: str = "ana") -> dict:
     }
 
 
+def _start_update(*, message_id: int = _MESSAGE_ID) -> dict:
+    """Return a valid ``/start`` deep-link update (bare payload → generic context)."""
+    update = _update(message_id=message_id)
+    update["message"]["text"] = "/start"
+    return update
+
+
 async def _count_conversations(session: AsyncSession) -> int:
     """Return the total number of persisted conversations."""
     return int(
-        (await session.execute(select(func.count()).select_from(SupportConversation)))
-        .scalar_one()
+        (
+            await session.execute(select(func.count()).select_from(SupportConversation))
+        ).scalar_one()
     )
 
 
 async def _count_messages(session: AsyncSession) -> int:
     """Return the total number of persisted messages."""
     return int(
-        (await session.execute(select(func.count()).select_from(SupportMessage)))
-        .scalar_one()
+        (
+            await session.execute(select(func.count()).select_from(SupportMessage))
+        ).scalar_one()
     )
 
 
@@ -308,6 +317,33 @@ class TelegramWebhookNotifyStaffTest:
             )
         ).scalar_one()
         notify.delay.assert_called_once_with(conv.id, "Ana", "Salut"[:_SNIPPET_LEN])
+
+    async def test_start_deep_link_enqueues_friendly_snippet(
+        self,
+        guest_client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Arrange: valid secret, a configured staff chat, and a spied task.
+        monkeypatch.setattr(settings, "telegram_webhook_secret", _TEST_SECRET)
+        monkeypatch.setattr(settings, "telegram_staff_chat_id", _STAFF_CHAT_ID)
+        notify = Mock()
+        monkeypatch.setattr(telegram_router, "notify_staff", notify)
+
+        # Act: a "/start" deep-link opens a fresh chat (generic 'site' context).
+        resp = await guest_client.post(
+            _WEBHOOK_URL,
+            json=_start_update(),
+            headers={_SECRET_HEADER: _TEST_SECRET},
+        )
+
+        # Assert: the ping snippet is the friendly context, NOT the raw command.
+        assert resp.status_code == 200, resp.text
+        _id, _name, snippet = notify.delay.call_args.args
+        assert snippet == "🔗 Обращение с сайта", (
+            "ping shows the friendly /start context"
+        )
+        assert not snippet.startswith("/start"), "ping must not show the raw command"
 
     async def test_name_falls_back_when_sender_anonymous(
         self,

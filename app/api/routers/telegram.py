@@ -81,8 +81,10 @@ async def telegram_webhook(
     if inbound is None:
         return {"ok": True}
 
-    conversation_id = await SupportService(session, redis).handle_inbound(inbound)
+    conversation_id, snippet = await SupportService(session, redis).handle_inbound(
+        inbound
+    )
     if conversation_id is not None and settings.telegram_staff_chat_id:
         name = inbound.customer_name or inbound.customer_username or "клиент"
-        notify_staff.delay(conversation_id, name, inbound.text[:200])
+        notify_staff.delay(conversation_id, name, snippet[:200])
     return {"ok": True}

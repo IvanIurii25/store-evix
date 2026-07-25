@@ -104,7 +104,9 @@ def _start_inbound(*, chat_id: int, payload: str) -> InboundMessage:
     )
 
 
-async def _messages(session: AsyncSession, conversation_id: int) -> list[SupportMessage]:
+async def _messages(
+    session: AsyncSession, conversation_id: int
+) -> list[SupportMessage]:
     """Return every stored message for a conversation, oldest first."""
     return list(
         (
@@ -137,9 +139,9 @@ class SupportServiceOrderLinkTest:
 
         # Assert: the link is set to the order's id and the order is returned.
         assert returned.id == order.id, "link_order returns the resolved order"
-        assert (
-            conv.linked_order_id == order.id
-        ), "the conversation's linked_order_id is set to the order id"
+        assert conv.linked_order_id == order.id, (
+            "the conversation's linked_order_id is set to the order id"
+        )
         linked = await service.get_linked_order(conv)
         assert linked is not None, "get_linked_order resolves the linked order"
         assert linked.id == order.id, "get_linked_order returns the same order"
@@ -186,9 +188,9 @@ class SupportServiceOrderLinkTest:
 
         # Assert: the link is cleared → get_linked_order is None.
         assert conv.linked_order_id is None, "unlink clears linked_order_id"
-        assert (
-            await service.get_linked_order(conv) is None
-        ), "get_linked_order returns None after unlink"
+        assert await service.get_linked_order(conv) is None, (
+            "get_linked_order returns None after unlink"
+        )
 
     async def test_unlink_order_missing_conversation_raises_not_found(
         self,
@@ -212,9 +214,9 @@ class SupportServiceOrderLinkTest:
         service = SupportService(db_session, redis_client)
 
         # Act / Assert: an unlinked conversation resolves to no order.
-        assert (
-            await service.get_linked_order(conv) is None
-        ), "an unlinked conversation has no linked order"
+        assert await service.get_linked_order(conv) is None, (
+            "an unlinked conversation has no linked order"
+        )
 
 
 class SupportServiceStartOrderTest:
@@ -230,22 +232,24 @@ class SupportServiceStartOrderTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the opening "/start o<number>".
-        conv_id = await service.handle_inbound(
+        conv_id, snippet = await service.handle_inbound(
             _start_inbound(chat_id=_CHAT_ORDER, payload=f"o{order.number}")
         )
 
         # Assert: a conversation is created, linked to the order, and its context
         # inbound names the order number.
         assert conv_id is not None, "opening /start starts a conversation → returns id"
+        # The staff-ping snippet is the friendly order context, not the raw command.
+        assert f"заказу №{order.number}" in snippet, "snippet names the order number"
         conv = await SupportRepository(db_session).get_conversation(conv_id)
-        assert (
-            conv.linked_order_id == order.id
-        ), "the /start o<number> deep-link links the conversation to the order"
+        assert conv.linked_order_id == order.id, (
+            "the /start o<number> deep-link links the conversation to the order"
+        )
         context = (await _messages(db_session, conv_id))[0]
         assert context.direction == "in", "the context line is the opening inbound"
-        assert (
-            f"№{order.number}" in context.text
-        ), "the context must name the order number"
+        assert f"№{order.number}" in context.text, (
+            "the context must name the order number"
+        )
 
     async def test_unknown_order_number_falls_back_to_generic(
         self,
@@ -256,7 +260,7 @@ class SupportServiceStartOrderTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest "/start o<missing-number>".
-        conv_id = await service.handle_inbound(
+        conv_id, _snippet = await service.handle_inbound(
             _start_inbound(
                 chat_id=_CHAT_MISSING_ORDER, payload=f"o{_MISSING_ORDER_NUMBER}"
             )
@@ -264,13 +268,13 @@ class SupportServiceStartOrderTest:
 
         # Assert: an unresolved order resolves like the generic "site" case — no link.
         conv = await SupportRepository(db_session).get_conversation(conv_id)
-        assert (
-            conv.linked_order_id is None
-        ), "an unknown order number leaves the conversation unlinked"
+        assert conv.linked_order_id is None, (
+            "an unknown order number leaves the conversation unlinked"
+        )
         context = (await _messages(db_session, conv_id))[0]
-        assert (
-            _GENERIC_CONTEXT in context.text
-        ), "missing order → the generic 'site' context line"
+        assert _GENERIC_CONTEXT in context.text, (
+            "missing order → the generic 'site' context line"
+        )
 
 
 class AdminOrderLinkApiTest:
@@ -375,9 +379,7 @@ class AdminOrderLinkApiTest:
         # Assert: 204 No Content.
         assert resp.status_code == 204, resp.text
 
-    async def test_unlink_unknown_conversation_404(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_unlink_unknown_conversation_404(self, client: AsyncClient) -> None:
         # Act: unlink a conversation that does not exist.
         resp = await client.delete(f"{_BASE}/{_MISSING_CONV_ID}/link")
 
@@ -424,6 +426,6 @@ class AdminOrderLinkApiTest:
 
         # Assert: linked_order is null once the link is cleared.
         assert resp.status_code == 200, resp.text
-        assert (
-            resp.json()["linked_order"] is None
-        ), "detail carries a null linked_order after unlink"
+        assert resp.json()["linked_order"] is None, (
+            "detail carries a null linked_order after unlink"
+        )

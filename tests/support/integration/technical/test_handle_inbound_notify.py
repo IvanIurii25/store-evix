@@ -71,13 +71,15 @@ class SupportServiceHandleInboundBurstTest:
         service = SupportService(db_session, redis_client)
 
         # Act: ingest the first-ever inbound for this chat.
-        result = await service.handle_inbound(
+        conv_id, snippet = await service.handle_inbound(
             _inbound(chat_id=_CHAT_NEW, message_id=_MSG_FIRST)
         )
 
         # Assert: a brand-new conversation is a fresh burst → its id is returned.
         conv = await SupportRepository(db_session).get_by_tg_chat_id(_CHAT_NEW)
-        assert result == conv.id, "a new conversation must return its id (fresh burst)"
+        assert conv_id == conv.id, "a new conversation must return its id (fresh burst)"
+        # And a normal message's snippet is its raw text (the ping shows the message).
+        assert snippet == "Salut", "a normal inbound snippet is the message text"
 
     async def test_existing_read_conversation_returns_id(
         self,
@@ -91,12 +93,12 @@ class SupportServiceHandleInboundBurstTest:
         service = SupportService(db_session, redis_client)
 
         # Act: a NEW inbound message arrives on the read conversation.
-        result = await service.handle_inbound(
+        result_id, _snippet = await service.handle_inbound(
             _inbound(chat_id=_CHAT_READ, message_id=_MSG_FIRST)
         )
 
         # Assert: unread was 0 → this starts a fresh burst → the id is returned.
-        assert result == conv_id, "a previously-read conversation restarts the burst"
+        assert result_id == conv_id, "a previously-read conversation restarts the burst"
 
     async def test_existing_unread_conversation_returns_none(
         self,
@@ -108,12 +110,12 @@ class SupportServiceHandleInboundBurstTest:
         service = SupportService(db_session, redis_client)
 
         # Act: a follow-up inbound arrives while still unread.
-        result = await service.handle_inbound(
+        result_id, _snippet = await service.handle_inbound(
             _inbound(chat_id=_CHAT_UNREAD, message_id=_MSG_FIRST)
         )
 
         # Assert: already unread → no re-ping (debounced) → None.
-        assert result is None, "a follow-up while already unread must not re-ping"
+        assert result_id is None, "a follow-up while already unread must not re-ping"
 
     async def test_redelivered_update_returns_none(
         self,
@@ -122,14 +124,13 @@ class SupportServiceHandleInboundBurstTest:
     ) -> None:
         # Arrange: a first inbound establishes the conversation + stored message.
         service = SupportService(db_session, redis_client)
-        await service.handle_inbound(
-            _inbound(chat_id=_CHAT_DUP, message_id=_MSG_FIRST)
-        )
+        await service.handle_inbound(_inbound(chat_id=_CHAT_DUP, message_id=_MSG_FIRST))
 
         # Act: the SAME update (same chat + tg_message_id) is delivered again.
-        result = await service.handle_inbound(
+        result_id, snippet = await service.handle_inbound(
             _inbound(chat_id=_CHAT_DUP, message_id=_MSG_FIRST)
         )
 
-        # Assert: dedup short-circuits before any burst decision → None.
-        assert result is None, "a re-delivered update must dedup and not re-ping"
+        # Assert: dedup short-circuits before any burst decision → None + empty snippet.
+        assert result_id is None, "a re-delivered update must dedup and not re-ping"
+        assert snippet == "", "a deduped update carries no ping snippet"
