@@ -84,6 +84,19 @@ class OutOfStockError(CheckoutError):
         super().__init__(f"Insufficient stock for product {product_id}")
 
 
+class ProductNotFoundError(CheckoutError):
+    """No active product matches the requested id (one-click buy, A2).
+
+    Raised by :meth:`CheckoutService.quick_buy` when the product is missing or
+    inactive. Mapped to HTTP 404 with code ``product_not_found``. Carries the
+    offending ``product_id`` for the error ``details``.
+    """
+
+    def __init__(self, product_id: int) -> None:
+        self.product_id = product_id
+        super().__init__(f"Product {product_id} not found or unavailable")
+
+
 class _PricedLine:
     """A resolved cart line ready to price / persist (internal to checkout)."""
 
@@ -236,6 +249,154 @@ class CheckoutService:
         )
         applied_code = promo_code if discount_total > _ZERO else None
 
+        return await self._persist_order(
+            lines=lines,
+            user_id=user_id,
+            email=email,
+            phone=phone,
+            totals=totals,
+            delivery_type=delivery_type,
+            delivery_address_id=delivery_address_id,
+            snapshot=(snap_name, snap_city, snap_street, snap_zip),
+            promo_code=applied_code,
+            cart_id=cart.id,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Quick buy (one-click COD, feature A2 — no cart, single product)
+    # ------------------------------------------------------------------ #
+    async def quick_buy(
+        self,
+        *,
+        product_id: int,
+        phone: str,
+        name: str | None = None,
+        email: str | None = None,
+        qty: int = 1,
+        lang: str = NAME_LANG,
+    ) -> OrderOut:
+        """Create a one-product COD order without a cart or full checkout (A2).
+
+        Resolves and stock-checks a single active product, then reuses the same
+        atomic persistence core as :meth:`checkout` (:meth:`_persist_order`):
+        race-safe stock decrement, snapshotted line, order number, status
+        history and one commit, with the post-commit confirmation email. Always
+        free pickup — no delivery address and no discount. ``email`` is optional;
+        when omitted a deterministic placeholder is derived from the phone (the
+        ``order.email`` column is NOT NULL). ``name`` is snapshotted onto
+        ``delivery_name``.
+
+        Args:
+            product_id: Product to buy.
+            phone: Contact phone (required — the operator calls back).
+            name: Optional customer name (snapshotted as ``delivery_name``).
+            email: Optional contact email; a placeholder is derived from the
+                phone when omitted.
+            qty: Quantity to buy (defaults to 1).
+            lang: Requested snapshot language for the line name.
+
+        Returns:
+            OrderOut: The created order with its single line.
+
+        Raises:
+            ProductNotFoundError: If no active product matches ``product_id``.
+            OutOfStockError: If stock is insufficient (at read or at decrement).
+        """
+        resolved = await self.repo.get_product_with_name(
+            product_id, normalize_lang(lang)
+        )
+        if resolved is None:
+            raise ProductNotFoundError(product_id)
+        product, name_snapshot = resolved
+        if qty > product.qty:
+            raise OutOfStockError(product.id)
+
+        line = _PricedLine(
+            product_id=product.id,
+            name=name_snapshot if name_snapshot is not None else product.code,
+            price=product.price,
+            qty=qty,
+        )
+        totals = self._quote_from_lines([line], PICKUP, None)
+        contact_email = email if email else self._placeholder_email(phone)
+        snapshot: _DeliverySnapshot = (name, None, None, None)
+        return await self._persist_order(
+            lines=[line],
+            user_id=None,
+            email=contact_email,
+            phone=phone,
+            totals=totals,
+            delivery_type=PICKUP,
+            delivery_address_id=None,
+            snapshot=snapshot,
+            promo_code=None,
+            cart_id=None,
+        )
+
+    @staticmethod
+    def _placeholder_email(phone: str) -> str:
+        """Derive a NOT-NULL-satisfying placeholder email from a phone (A2).
+
+        The ``order.email`` column is ``NOT NULL``; a phone-only quick buy has no
+        email, so a deterministic ``<digits>@quick.evix.md`` address is used. It
+        is a valid local-part (digits only) and clearly marks the order as
+        one-click (the operator has the real phone).
+
+        Args:
+            phone: The contact phone (any format).
+
+        Returns:
+            str: The placeholder email address.
+        """
+        digits = "".join(ch for ch in phone if ch.isdigit()) or "0"
+        return f"{digits}@quick.evix.md"
+
+    # ------------------------------------------------------------------ #
+    # Atomic order persistence (shared by checkout + quick_buy)
+    # ------------------------------------------------------------------ #
+    async def _persist_order(
+        self,
+        *,
+        lines: list["_PricedLine"],
+        user_id: int | None,
+        email: str,
+        phone: str,
+        totals: QuoteOut,
+        delivery_type: str,
+        delivery_address_id: int | None,
+        snapshot: _DeliverySnapshot,
+        promo_code: str | None,
+        cart_id: int | None,
+    ) -> OrderOut:
+        """Create the order + lines in one transaction (§9.6, shared core).
+
+        Extracted from :meth:`checkout` so :meth:`quick_buy` reuses the exact
+        atomic path without duplicating it: generate a race-safe number, insert
+        the order + snapshotted lines, decrement stock with the conditional
+        UPDATE (oversell → rollback + :class:`OutOfStockError`), optionally
+        convert the cart, and write the initial status history. The confirmation
+        email fires only after ``commit`` (§9.8). Behaviour for the cart path is
+        unchanged; ``cart_id=None`` simply skips cart conversion (quick buy).
+
+        Args:
+            lines: Resolved, stock-checked lines to persist.
+            user_id: Owning user id, or ``None`` for a guest order.
+            email: Contact email stored on the order (never ``None``).
+            phone: Contact phone stored on the order.
+            totals: Pre-computed subtotal / discount / delivery / total.
+            delivery_type: ``pickup`` or ``courier``.
+            delivery_address_id: Saved address id (courier), else ``None``.
+            snapshot: ``(name, city, street, zip)`` delivery snapshot.
+            promo_code: Redeemed coupon snapshot, else ``None``.
+            cart_id: Cart to mark converted, or ``None`` to skip (quick buy).
+
+        Returns:
+            OrderOut: The created order with its lines.
+
+        Raises:
+            OutOfStockError: If any line's stock is insufficient at commit time.
+        """
+        snap_name, snap_city, snap_street, snap_zip = snapshot
         number = await self.repo.next_order_number()
         order = self.repo.add_order(
             number=number,
@@ -252,7 +413,7 @@ class CheckoutService:
             delivery_city=snap_city,
             delivery_street=snap_street,
             delivery_zip=snap_zip,
-            promo_code=applied_code,
+            promo_code=promo_code,
         )
         await self.session.flush()  # assign order.id
         # Pull DB-side ``created_at`` (server_default) onto the instance so the
@@ -277,7 +438,8 @@ class CheckoutService:
                 await self.session.rollback()
                 raise OutOfStockError(line.product_id)
 
-        await self.repo.mark_cart_converted(cart.id)
+        if cart_id is not None:
+            await self.repo.mark_cart_converted(cart_id)
         self.repo.add_status_history(
             order_id=order.id,
             from_status="",

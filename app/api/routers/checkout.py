@@ -24,13 +24,20 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.errors import error_response
 from app.models.user import AppUser
-from app.schemas.order import CheckoutRequest, OrderOut, QuoteOut, QuoteRequest
+from app.schemas.order import (
+    CheckoutRequest,
+    OrderOut,
+    QuickBuyRequest,
+    QuoteOut,
+    QuoteRequest,
+)
 from app.services.checkout_service import (
     CheckoutService,
     DeliveryAddressForbiddenError,
     DeliveryAddressRequiredError,
     EmptyCartError,
     OutOfStockError,
+    ProductNotFoundError,
 )
 from app.services.promo_service import (
     PromoExpiredError,
@@ -238,6 +245,65 @@ async def checkout(
         # Return the envelope directly so ``error.code`` is exactly
         # ``out_of_stock`` (the shared HTTPException handler always emits
         # ``http_error``, which the contract forbids here).
+        return error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            code="out_of_stock",
+            message=str(exc),
+            details={"product_id": exc.product_id},
+        )
+
+
+@router.post(
+    "/quick",
+    response_model=OrderOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "Product not found"},
+        status.HTTP_409_CONFLICT: {"description": "Insufficient stock"},
+    },
+    dependencies=[Depends(rate_limiter(settings.rate_limit_checkout, "checkout"))],
+)
+async def quick_buy(
+    data: QuickBuyRequest,
+    session: AsyncSession = Depends(get_session),
+    lang: str = Query(default="ro", description="Snapshot language (ru|ro)."),
+) -> OrderOut | JSONResponse:
+    """Create a one-product COD order in one click (feature A2).
+
+    A phone-only guest flow (no cart, no full checkout): the caller supplies a
+    ``product_id`` and a ``phone`` and an operator calls back. Always free
+    pickup. Reuses the same atomic path as ``POST /checkout`` and is rate-limited
+    with the same ``checkout`` bucket to blunt spam.
+
+    Args:
+        data: Product + contact details for the one-click order.
+        session: Injected async DB session.
+        lang: Language captured into the line's ``name_snapshot`` (default
+            ``ro``; unsupported values fall back to the default).
+
+    Returns:
+        OrderOut | JSONResponse: The created order, a 404 ``product_not_found``
+            envelope for a missing/inactive product, or a 409 ``out_of_stock``
+            envelope when stock is insufficient.
+    """
+    service = CheckoutService(session)
+    try:
+        return await service.quick_buy(
+            product_id=data.product_id,
+            phone=data.phone,
+            name=data.name,
+            email=data.email,
+            qty=data.qty,
+            lang=lang,
+        )
+    except ProductNotFoundError as exc:
+        return error_response(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="product_not_found",
+            message=str(exc),
+            details={"product_id": exc.product_id},
+        )
+    except OutOfStockError as exc:
         return error_response(
             status_code=status.HTTP_409_CONFLICT,
             code="out_of_stock",

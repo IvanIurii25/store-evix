@@ -120,6 +120,40 @@ class OrderRepository:
         rows = await self.session.execute(stmt)
         return [tuple(row) for row in rows.all()]
 
+    async def get_product_with_name(
+        self,
+        product_id: int,
+        lang: str,
+    ) -> tuple[Product, str | None] | None:
+        """Return an active product + its localized name for one-click buy (A2).
+
+        Mirrors :meth:`list_cart_lines`' name resolution for a single product:
+        two LEFT joins to ``product_translation`` (requested ``lang`` then the
+        default :data:`NAME_LANG`) coalesced to ``requested → default → None``
+        (the service falls back to ``product.code`` when ``None``). Inactive
+        products are excluded so the quick-buy path treats them as absent.
+
+        Args:
+            product_id: Catalog product id to buy.
+            lang: Requested snapshot language (validated by the caller).
+
+        Returns:
+            tuple[Product, str | None] | None: ``(product, name)`` when an active
+                product exists, else ``None``.
+        """
+        req = aliased(ProductTranslation)
+        dft = aliased(ProductTranslation)
+        stmt = (
+            select(Product, func.coalesce(req.name, dft.name))
+            .outerjoin(req, (req.product_id == Product.id) & (req.lang == lang))
+            .outerjoin(dft, (dft.product_id == Product.id) & (dft.lang == NAME_LANG))
+            .where(Product.id == product_id, Product.is_active.is_(True))
+        )
+        row = (await self.session.execute(stmt)).first()
+        if row is None:
+            return None
+        return (row[0], row[1])
+
     async def mark_cart_converted(self, cart_id: int) -> None:
         """Flip a cart to ``converted`` after its order is created (§9.6).
 

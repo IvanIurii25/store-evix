@@ -84,6 +84,32 @@ class CheckoutRequest(BaseModel):
     )
 
 
+class QuickBuyRequest(BaseModel):
+    """Request body for ``POST /checkout/quick`` — one-click COD buy (feature A2).
+
+    A phone-only flow: the guest supplies a ``product_id`` and a ``phone`` and
+    an operator calls back. ``email`` is optional (the ``order.email`` column is
+    NOT NULL, so a placeholder is derived from the phone when it is omitted);
+    ``name`` is optional and snapshotted onto the order's ``delivery_name``.
+    Delivery is always free pickup — no address, no cart, no full checkout.
+    """
+
+    product_id: int = Field(..., gt=0, description="Product to buy in one click.")
+    phone: str = Field(..., min_length=3, description="Contact phone (required).")
+    name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional customer name (snapshotted as delivery_name).",
+    )
+    email: str | None = Field(
+        default=None,
+        min_length=3,
+        description="Optional contact email; a placeholder is derived from the "
+        "phone when omitted (the order email column is NOT NULL).",
+    )
+    qty: int = Field(default=1, gt=0, description="Quantity (defaults to 1).")
+
+
 class QuoteOut(BaseModel):
     """Computed checkout totals returned by ``POST /checkout/quote`` (§9)."""
 
