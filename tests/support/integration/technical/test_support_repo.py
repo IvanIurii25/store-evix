@@ -14,7 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.support import SupportConversation
-from app.repositories.support_repo import SupportRepository
+from app.repositories.support_repo import (
+    SupportCannedRepository,
+    SupportRepository,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -351,3 +354,106 @@ class SupportRepositoryMutationTest:
 
         # Assert: unread unchanged (operator reply is not an unread inbound).
         assert conv.unread_count == unread_before, "outbound must not touch unread"
+
+
+class SupportCannedRepositoryTest:
+    """``SupportCannedRepository`` create/get/list/update/delete against the DB."""
+
+    async def test_create_then_get_roundtrip_and_missing_none(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: a repo bound to the test session.
+        repo = SupportCannedRepository(db_session)
+
+        # Act: create a template, then fetch it (and a missing one) by id.
+        created = await repo.create(
+            title="Greeting",
+            text="Bună ziua!",
+            lang="ro",
+            sort_order=0,
+        )
+        found = await repo.get(created.id)
+        missing = await repo.get(999999)
+
+        # Assert: the created row is flushed and retrievable; unknown id → None.
+        assert created.id is not None, "new canned response must be flushed"
+        assert found is not None, "canned response must be found by id"
+        assert found.id == created.id, "get must return the created row"
+        assert found.title == "Greeting", "stored title round-trips"
+        assert missing is None, "unknown canned id must return None"
+
+    async def test_list_ordering_and_lang_filter(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: mixed languages + out-of-order sort_order to prove ordering
+        # (sort_order asc, then id asc) and the lang filter independently.
+        repo = SupportCannedRepository(db_session)
+        ro_second = await repo.create(
+            title="ro-b", text="b", lang="ro", sort_order=10
+        )
+        ro_first = await repo.create(title="ro-a", text="a", lang="ro", sort_order=1)
+        ru_one = await repo.create(title="ru-a", text="a", lang="ru", sort_order=5)
+
+        # Act: list all (no filter) and list only the ``ru`` templates.
+        all_rows = await repo.list(lang=None)
+        ru_rows = await repo.list(lang="ru")
+
+        # Assert: all rows ordered by sort_order then id; filter isolates ``ru``.
+        assert [r.id for r in all_rows] == [
+            ro_first.id,  # sort_order 1
+            ru_one.id,  # sort_order 5
+            ro_second.id,  # sort_order 10
+        ], "list must order by sort_order asc then id asc"
+        assert [r.id for r in ru_rows] == [ru_one.id], "lang filter keeps only ru"
+
+    async def test_update_changes_fields_and_missing_none(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: an existing template to mutate.
+        repo = SupportCannedRepository(db_session)
+        canned = await repo.create(
+            title="old", text="old body", lang="ro", sort_order=0
+        )
+
+        # Act: update every field, and attempt to update an unknown id.
+        updated = await repo.update(
+            canned.id,
+            title="new",
+            text="new body",
+            lang="ru",
+            sort_order=7,
+        )
+        missing = await repo.update(
+            999999,
+            title="x",
+            text="x",
+            lang="ro",
+            sort_order=0,
+        )
+
+        # Assert: present id returns the mutated row; unknown id → None.
+        assert updated is not None, "updating an existing row returns it"
+        assert updated.title == "new", "title updated"
+        assert updated.text == "new body", "text updated"
+        assert updated.lang == "ru", "lang updated"
+        assert updated.sort_order == 7, "sort_order updated"
+        assert missing is None, "updating a missing canned id returns None"
+
+    async def test_delete_present_true_and_missing_false(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Arrange: a template to delete.
+        repo = SupportCannedRepository(db_session)
+        canned = await repo.create(
+            title="bye", text="body", lang="ro", sort_order=0
+        )
+        canned_id = canned.id
+
+        # Act: delete it (present), then attempt an unknown id.
+        deleted = await repo.delete(canned_id)
+        missing = await repo.delete(999999)
+
+        # Assert: present → True and the row is gone; missing → False.
+        assert deleted is True, "deleting an existing canned response returns True"
+        assert await repo.get(canned_id) is None, "the deleted row must be gone"
+        assert missing is False, "deleting a missing canned id returns False"
