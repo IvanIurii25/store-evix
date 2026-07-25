@@ -77,7 +77,7 @@ class Order(Base, TimestampMixin):
     delivery_type: Mapped[str] = mapped_column(String, nullable=False)
     delivery_address_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("address.id"),
+        ForeignKey("address.id", ondelete="SET NULL"),
         nullable=True,
     )
     # Delivery address snapshot (courier). Captured at checkout so the order is

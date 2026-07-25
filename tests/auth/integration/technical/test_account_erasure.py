@@ -77,6 +77,45 @@ class TestAccountErasure:
         # Order kept (lawful fiscal obligation, Art.17(3)(b)).
         assert await tx_session.get(Order, order_id) is not None
 
+    async def test_anonymize_with_courier_order_nulls_address_fk(
+        self, tx_session: AsyncSession, redis_client: Redis
+    ):
+        """Erasing an account that has a courier order referencing a saved
+        address succeeds (BUG-006): bulk-deleting the addresses nulls
+        ``order.delivery_address_id`` via ``ON DELETE SET NULL`` instead of
+        raising a RESTRICT ``IntegrityError`` (the path that previously 500'd).
+        """
+        # Arrange: a user with a saved address AND a courier order linked to it.
+        user = await create_user(
+            tx_session, email="courier@example.com", phone="+37360000456"
+        )
+        address = await persist(tx_session, AddressFactory(user_id=user.id))
+        order = await create_order(
+            tx_session,
+            user=user,
+            delivery_type="courier",
+            delivery_address_id=address.id,
+            delivery_name="Ion Popescu",
+            delivery_city="Chisinau",
+            delivery_street="Stefan cel Mare 1",
+            delivery_zip="MD-2001",
+        )
+        uid, order_id = user.id, order.id
+
+        # Act: the erasure path that currently 500s on a linked courier order.
+        await AuthService(session=tx_session, redis=redis_client).anonymize_account(uid)
+
+        # Address rows deleted; order kept with its FK nulled by the DB.
+        assert await _count(tx_session, Address, uid) == 0
+        kept_order = await tx_session.get(Order, order_id)
+        assert kept_order is not None
+        await tx_session.refresh(kept_order)
+        assert kept_order.delivery_address_id is None
+        # Profile anonymized + deactivated.
+        erased = await tx_session.get(AppUser, uid)
+        assert erased.email == f"deleted-{uid}@anonymized.local"
+        assert erased.is_active is False
+
     async def test_anonymize_replaces_password_so_it_cannot_verify(
         self, tx_session: AsyncSession, redis_client: Redis
     ):
