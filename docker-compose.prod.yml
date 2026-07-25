@@ -121,6 +121,11 @@ services:
       COURIER_RATE: ${COURIER_RATE:-50}
       RATE_LIMIT_LOGIN: 5/60
       RATE_LIMIT_CHECKOUT: 10/60
+      # Telegram support bot (helpdesk). Empty → feature off. Set the token +
+      # secret in .env on the server; STAFF_CHAT_ID is optional (group pings).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      TELEGRAM_STAFF_CHAT_ID: ${TELEGRAM_STAFF_CHAT_ID:-}
     # uvicorn --proxy-headers: trust X-Forwarded-* from Cloudflare (rate-limit
     # reads the real client IP). Multiple workers for prod load.
     command:
@@ -220,6 +225,7 @@ services:
       args:
         PUBLIC_API_BASE: https://shop.evix.md
         SITE_URL: https://shop.evix.md
+        PUBLIC_TELEGRAM_BOT_USERNAME: evix_support_bot
     restart: unless-stopped
     # SSR fetches the API internally (no edge hairpin); browser uses PUBLIC base.
     environment:
