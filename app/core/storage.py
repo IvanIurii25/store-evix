@@ -19,16 +19,33 @@ The single method ``save`` takes the raw bytes plus the original ``filename``
 the object is served from.
 """
 
+import mimetypes
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
+from uuid import uuid4
 
 import aioboto3
+from botocore.exceptions import ClientError
 
 from app.core.config import Settings, settings
 
 # Object-key prefix for S3-stored media (keeps uploads grouped in the bucket).
 _S3_KEY_PREFIX: str = "media"
+
+# Object-key prefix for support attachments (customer photos/documents sent to
+# the Telegram bot). Unlike ``media``, these are never served by a public URL —
+# they are streamed by a staff-only proxy — so they use key-addressed
+# put/fetch/remove (:meth:`Storage.put_key` etc.) instead of :meth:`Storage.save`.
+SUPPORT_KEY_PREFIX: str = "support"
+
+# Cache header for private support attachments: mutable lifecycle (erasure /
+# retention delete them), never cached by shared caches.
+_SUPPORT_CACHE_CONTROL: str = "private, no-store"
+
+# Fallback content type for local support attachments whose type can't be
+# guessed from the key.
+_DEFAULT_CONTENT_TYPE: str = "application/octet-stream"
 
 # Long-lived immutable cache header for all stored media. Objects are named by a
 # random uuid (originals) or ``<uuid>_<width>.webp`` (variants), so a given key's
@@ -68,6 +85,26 @@ def _object_name(filename: str) -> str:
     """
     suffix = Path(filename or "").suffix
     return f"{uuid.uuid4().hex}{suffix}"
+
+
+def support_attachment_key(conversation_id: int, ext: str) -> str:
+    """Build a key-addressed object key for a support attachment.
+
+    Support attachments are grouped per conversation under the private
+    :data:`SUPPORT_KEY_PREFIX` and named by a random uuid so their bytes are
+    stable and unguessable. Stored/fetched/removed via the key-addressed methods
+    (:meth:`Storage.put_key` / :meth:`Storage.fetch_key` /
+    :meth:`Storage.remove_key`), never by public URL.
+
+    Args:
+        conversation_id: The owning :class:`SupportConversation` id.
+        ext: The file extension including the leading dot (e.g. ``.jpg``), or an
+            empty string when the source has none.
+
+    Returns:
+        str: ``support/<conversation_id>/<uuid4hex><ext>``.
+    """
+    return f"{SUPPORT_KEY_PREFIX}/{conversation_id}/{uuid4().hex}{ext}"
 
 
 class Storage(ABC):
@@ -116,6 +153,50 @@ class Storage(ABC):
 
         Args:
             url: The public URL originally returned by :meth:`save`.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def put_key(self, key: str, data: bytes, *, content_type: str) -> None:
+        """Store ``data`` at exactly ``key`` (no auto-naming) with a content type.
+
+        Unlike :meth:`save`, the caller owns the key (see
+        :func:`support_attachment_key`) and the object is *not* served by a public
+        URL — it is streamed by a staff-only proxy. Objects are private and have a
+        mutable lifecycle (erasure / retention delete them), so no long-lived
+        immutable cache header is applied.
+
+        Args:
+            key: The exact object key to store the bytes under.
+            data: The raw file contents to store.
+            content_type: The MIME type stored with the object.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def fetch_key(self, key: str) -> tuple[bytes, str] | None:
+        """Return ``(data, content_type)`` for the object at ``key``, or ``None``.
+
+        Used by the staff proxy to stream a support attachment.
+
+        Args:
+            key: The exact object key to read.
+
+        Returns:
+            tuple[bytes, str] | None: The object's bytes and MIME type, or
+            ``None`` when no object exists at ``key``.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def remove_key(self, key: str) -> None:
+        """Delete the object at ``key`` (idempotent — missing is a no-op).
+
+        Drives erasure / retention deletion of support attachments; a missing
+        object must never raise.
+
+        Args:
+            key: The exact object key to delete.
         """
         raise NotImplementedError
 
@@ -175,6 +256,45 @@ class LocalStorage(Storage):
         name = Path(url).name
         if name:
             (self._root / name).unlink(missing_ok=True)
+
+    async def put_key(self, key: str, data: bytes, *, content_type: str) -> None:
+        """Write ``data`` under ``media_root`` at ``key`` (parent dirs created).
+
+        Args:
+            key: The exact object key (relative path under ``media_root``).
+            data: The raw file contents to store.
+            content_type: The MIME type (unused by the local backend).
+        """
+        destination = self._root / key
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as out:
+            out.write(data)
+
+    async def fetch_key(self, key: str) -> tuple[bytes, str] | None:
+        """Read the file at ``key`` under ``media_root`` and guess its type.
+
+        Args:
+            key: The exact object key (relative path under ``media_root``).
+
+        Returns:
+            tuple[bytes, str] | None: The file's bytes and a ``mimetypes``-guessed
+            content type (fallback ``application/octet-stream``), or ``None`` when
+            the file is missing.
+        """
+        source = self._root / key
+        if not source.is_file():
+            return None
+        data = source.read_bytes()
+        content_type = mimetypes.guess_type(key)[0] or _DEFAULT_CONTENT_TYPE
+        return data, content_type
+
+    async def remove_key(self, key: str) -> None:
+        """Unlink the file at ``key`` under ``media_root`` (missing is a no-op).
+
+        Args:
+            key: The exact object key (relative path under ``media_root``).
+        """
+        (self._root / key).unlink(missing_ok=True)
 
 
 class S3Storage(Storage):
@@ -282,6 +402,77 @@ class S3Storage(Storage):
         if not name:
             return
         key = f"{_S3_KEY_PREFIX}/{name}"
+        async with self._session.client(
+            "s3",
+            endpoint_url=self._endpoint_url,
+            aws_access_key_id=self._access_key,
+            aws_secret_access_key=self._secret_key,
+            region_name=self._region,
+        ) as client:
+            await client.delete_object(Bucket=self._bucket, Key=key)
+
+    async def put_key(self, key: str, data: bytes, *, content_type: str) -> None:
+        """Put ``data`` into the bucket at exactly ``key`` (private, mutable).
+
+        No long-lived immutable ``Cache-Control`` is set — support attachments are
+        private and their lifecycle is mutable (erasure / retention delete them).
+
+        Args:
+            key: The exact object key to store the bytes under.
+            data: The raw file contents to store.
+            content_type: The MIME type stored with the object.
+        """
+        async with self._session.client(
+            "s3",
+            endpoint_url=self._endpoint_url,
+            aws_access_key_id=self._access_key,
+            aws_secret_access_key=self._secret_key,
+            region_name=self._region,
+        ) as client:
+            await client.put_object(
+                Bucket=self._bucket,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+                CacheControl=_SUPPORT_CACHE_CONTROL,
+            )
+
+    async def fetch_key(self, key: str) -> tuple[bytes, str] | None:
+        """Get the bucket object at ``key``; return its bytes + content type.
+
+        Args:
+            key: The exact object key to read.
+
+        Returns:
+            tuple[bytes, str] | None: The object's bytes and stored ``ContentType``
+            (fallback ``application/octet-stream``), or ``None`` when no object
+            exists at ``key``.
+        """
+        async with self._session.client(
+            "s3",
+            endpoint_url=self._endpoint_url,
+            aws_access_key_id=self._access_key,
+            aws_secret_access_key=self._secret_key,
+            region_name=self._region,
+        ) as client:
+            try:
+                response = await client.get_object(Bucket=self._bucket, Key=key)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in ("NoSuchKey", "404", "NoSuchBucket"):
+                    return None
+                raise
+            async with response["Body"] as body:
+                data = await body.read()
+            content_type = response.get("ContentType") or _DEFAULT_CONTENT_TYPE
+            return data, content_type
+
+    async def remove_key(self, key: str) -> None:
+        """Delete the bucket object at ``key`` (missing keys are a no-op on S3).
+
+        Args:
+            key: The exact object key to delete.
+        """
         async with self._session.client(
             "s3",
             endpoint_url=self._endpoint_url,

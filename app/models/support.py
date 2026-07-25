@@ -36,11 +36,15 @@ SUPPORT_DIRECTIONS: tuple[str, ...] = (
     "out",
 )  # in = from customer, out = from operator
 SUPPORT_DELIVERY: tuple[str, ...] = ("sent", "failed")  # outbound send result
+# Inbound messages may carry an attachment; photos are inline images, documents
+# keep their original filename. NULL kind = a plain text message.
+ATTACHMENT_KINDS: tuple[str, ...] = ("photo", "document")
 # Canned reply templates are authored per storefront language (ro/ru).
 CANNED_LANGS: tuple[str, ...] = ("ro", "ru")
 _STATUS_IN = ", ".join(f"'{s}'" for s in SUPPORT_STATUSES)
 _DIRECTION_IN = ", ".join(f"'{d}'" for d in SUPPORT_DIRECTIONS)
 _DELIVERY_IN = ", ".join(f"'{d}'" for d in SUPPORT_DELIVERY)
+_ATTACHMENT_KIND_IN = ", ".join(f"'{k}'" for k in ATTACHMENT_KINDS)
 _CANNED_LANG_IN = ", ".join(f"'{lang}'" for lang in CANNED_LANGS)
 
 
@@ -107,6 +111,10 @@ class SupportMessage(Base):
             f"delivery IS NULL OR delivery IN ({_DELIVERY_IN})",
             name="support_delivery_valid",
         ),
+        CheckConstraint(
+            f"attachment_kind IS NULL OR attachment_kind IN ({_ATTACHMENT_KIND_IN})",
+            name="support_attachment_kind_valid",
+        ),
         # Thread render: all messages of a conversation in chronological order.
         Index(
             "ix_support_message_conversation_created", "conversation_id", "created_at"
@@ -133,6 +141,17 @@ class SupportMessage(Base):
     )
     # Outbound send result ("sent"/"failed"); null for inbound.
     delivery: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Attachment kind ("photo"/"document") for inbound messages carrying a file;
+    # null for plain-text messages. When set, ``text`` holds the caption (or a
+    # placeholder like "[фото]").
+    attachment_kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    # S3/local object key of the downloaded attachment (see
+    # ``support_attachment_key``); null while the fetch is pending or when there
+    # is no attachment. This is what the staff proxy streams and what
+    # erasure/retention delete.
+    attachment_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Original filename for documents (display/download); null for photos.
+    attachment_name: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
