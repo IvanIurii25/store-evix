@@ -57,6 +57,14 @@ class SupportConversation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # The Telegram chat id — one conversation per chat, so unique.
     tg_chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    # Optional link to an order so the operator sees the order context. Set
+    # manually by an operator or auto-populated from an ``o<number>`` deep-link.
+    # ON DELETE SET NULL so the conversation survives the order being removed.
+    linked_order_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("order.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # First+last name snapshot from Telegram (best-effort, may drift).
     customer_name: Mapped[str | None] = mapped_column(String, nullable=True)
     # @username snapshot; Telegram users may have no username.

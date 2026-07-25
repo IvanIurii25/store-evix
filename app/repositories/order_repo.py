@@ -367,6 +367,18 @@ class OrderRepository:
         stmt = select(Order).where(Order.number == number)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def get_order_by_id(self, order_id: int) -> Order | None:
+        """Load an order by its primary key.
+
+        Args:
+            order_id: Order primary key.
+
+        Returns:
+            Order | None: The order, or ``None``.
+        """
+        stmt = select(Order).where(Order.id == order_id)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
     async def list_orders_for_user(self, user_id: int) -> list[Order]:
         """Return a user's orders (newest first).
 

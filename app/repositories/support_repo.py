@@ -275,6 +275,28 @@ class SupportRepository:
         await self.session.flush()
         return conversation
 
+    async def set_linked_order(
+        self,
+        conversation_id: int,
+        order_id: int | None,
+    ) -> SupportConversation | None:
+        """Set (or clear) a conversation's linked order and return it flushed.
+
+        Args:
+            conversation_id: The conversation's primary key.
+            order_id: The order to link, or ``None`` to clear the link.
+
+        Returns:
+            SupportConversation | None: The updated conversation, or ``None`` if
+            it does not exist.
+        """
+        conversation = await self.get_conversation(conversation_id)
+        if conversation is None:
+            return None
+        conversation.linked_order_id = order_id
+        await self.session.flush()
+        return conversation
+
     async def mark_read(self, conversation_id: int) -> None:
         """Reset a conversation's unread counter (operator opened it).
 

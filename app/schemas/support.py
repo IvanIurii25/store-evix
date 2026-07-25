@@ -12,6 +12,7 @@ limit) and :class:`StatusIn` (a conversation status change, validated against
 """
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -60,6 +61,18 @@ class ConversationList(BaseModel):
     page_size: int
 
 
+class LinkedOrderOut(BaseModel):
+    """Summary of the order a conversation is linked to (operator context)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    number: str
+    status: str
+    payment_status: str
+    total: Decimal
+    created_at: datetime
+
+
 class ThreadOut(BaseModel):
     """One conversation plus a single page of its messages (§4)."""
 
@@ -68,6 +81,7 @@ class ThreadOut(BaseModel):
     total: int
     page: int
     page_size: int
+    linked_order: LinkedOrderOut | None = None
 
 
 class ReplyIn(BaseModel):
@@ -77,6 +91,16 @@ class ReplyIn(BaseModel):
         min_length=1,
         max_length=4096,
         description="Operator reply body (Telegram's 4096-char text cap).",
+    )
+
+
+class LinkOrderIn(BaseModel):
+    """Body for ``POST /admin/support/conversations/{id}/link``."""
+
+    order_number: str = Field(
+        min_length=1,
+        max_length=64,
+        description="Human-readable order number to link the conversation to.",
     )
 
 

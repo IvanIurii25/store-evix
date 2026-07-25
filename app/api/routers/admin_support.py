@@ -36,6 +36,8 @@ from app.schemas.support import (
     CannedOut,
     ConversationList,
     ConversationOut,
+    LinkedOrderOut,
+    LinkOrderIn,
     MessageOut,
     ReplyIn,
     StatusIn,
@@ -44,6 +46,7 @@ from app.schemas.support import (
 from app.services.support_service import (
     CannedNotFoundError,
     ConversationNotFoundError,
+    OrderNotFoundError,
     SupportCannedService,
     SupportService,
 )
@@ -169,12 +172,14 @@ async def get_conversation(
         limit=THREAD_PAGE_SIZE,
     )
     total = await svc.count_thread(conversation_id)
+    linked = await svc.get_linked_order(conv)
     return ThreadOut(
         conversation=ConversationOut.model_validate(conv),
         data=[MessageOut.model_validate(m) for m in messages],
         total=total,
         page=page,
         page_size=THREAD_PAGE_SIZE,
+        linked_order=LinkedOrderOut.model_validate(linked) if linked else None,
     )
 
 
@@ -245,6 +250,72 @@ async def set_status(
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     return ConversationOut.model_validate(conv)
+
+
+@router.post("/conversations/{conversation_id}/link", response_model=LinkedOrderOut)
+async def link_order(
+    conversation_id: int,
+    payload: LinkOrderIn,
+    session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> LinkedOrderOut:
+    """Link a conversation to an order by its number (operator context).
+
+    Args:
+        conversation_id: The conversation to link.
+        payload: The order number to resolve and link.
+        session: Injected async DB session.
+        redis: Injected async Redis client (required by the service ctor).
+
+    Returns:
+        LinkedOrderOut: The linked order's summary.
+
+    Raises:
+        HTTPException: 404 if the order or the conversation does not exist.
+    """
+    svc = SupportService(session, redis)
+    try:
+        order = await svc.link_order(conversation_id, payload.order_number)
+    except OrderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": "Заказ не найден"},
+        ) from exc
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return LinkedOrderOut.model_validate(order)
+
+
+@router.delete(
+    "/conversations/{conversation_id}/link",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def unlink_order(
+    conversation_id: int,
+    session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> None:
+    """Clear a conversation's order link.
+
+    Args:
+        conversation_id: The conversation to unlink.
+        session: Injected async DB session.
+        redis: Injected async Redis client (required by the service ctor).
+
+    Raises:
+        HTTPException: 404 if the conversation does not exist.
+    """
+    svc = SupportService(session, redis)
+    try:
+        await svc.unlink_order(conversation_id)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @router.delete(

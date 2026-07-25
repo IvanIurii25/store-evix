@@ -28,12 +28,14 @@ import app.core.telegram as telegram_client
 from app.core.config import settings
 from app.core.support_events import publish_support_event
 from app.core.telegram import InboundMessage
+from app.models.order import Order
 from app.models.support import (
     SupportCannedResponse,
     SupportConversation,
     SupportMessage,
 )
 from app.repositories.catalog_repo import CatalogRepository
+from app.repositories.order_repo import OrderRepository
 from app.repositories.support_repo import SupportCannedRepository, SupportRepository
 from app.schemas.support import CannedIn
 
@@ -56,6 +58,12 @@ class CannedNotFoundError(SupportError):
     """The referenced canned response does not exist."""
 
     code = "not_found"
+
+
+class OrderNotFoundError(SupportError):
+    """The order referenced for linking does not exist."""
+
+    code = "order_not_found"
 
 
 class SupportService:
@@ -161,7 +169,9 @@ class SupportService:
             return None
 
         payload = inbound.text[len("/start") :].strip()
-        context, product_name = await self._resolve_start_context(payload, conv.lang)
+        context, greeting_name, linked_order_id = await self._resolve_start_context(
+            payload, conv.lang
+        )
 
         await self.repo.add_message(
             conversation_id=conv.id,
@@ -170,8 +180,10 @@ class SupportService:
             tg_message_id=inbound.message_id,
         )
         await self.repo.bump_activity(conv, inbound=True)
+        if linked_order_id is not None:
+            await self.repo.set_linked_order(conv.id, linked_order_id)
 
-        greeting = self._start_greeting(product_name)
+        greeting = self._start_greeting(greeting_name)
         msg = await self.repo.add_message(
             conversation_id=conv.id,
             direction="out",
@@ -195,19 +207,23 @@ class SupportService:
         self,
         payload: str,
         lang: str | None,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, int | None]:
         """Resolve a ``/start`` payload into an operator context line (§).
 
         ``p<id>`` resolves to the product card (its name + a storefront link);
+        ``o<number>`` resolves to an order (linking the conversation to it);
         anything else (``site`` / empty / unknown) yields a generic line.
 
         Args:
-            payload: The stripped ``/start`` payload (``""``, ``"site"``, ``"p123"``…).
+            payload: The stripped ``/start`` payload (``""``, ``"site"``,
+                ``"p123"``, ``"o20260725-000042"``…).
             lang: The conversation's language snapshot, or ``None``.
 
         Returns:
-            tuple[str, str | None]: ``(context_line, product_name)`` — the product
-                name is ``None`` for the generic case.
+            tuple[str, str | None, int | None]: ``(context_line, greeting_name,
+                linked_order_id)`` — ``greeting_name`` is a ready-to-embed phrase
+                (or ``None`` for the generic greeting); ``linked_order_id`` is set
+                only for a resolved order deep-link.
         """
         resolved_lang = lang or settings.default_lang
         if payload.startswith("p") and payload[1:].isdigit():
@@ -216,22 +232,34 @@ class SupportService:
             )
             if card is not None:
                 url = f"{settings.storefront_base_url}/{resolved_lang}/p/{card.slug}"
-                return (f"🔗 Обращение по товару: «{card.name}» — {url}", card.name)
-        return ("🔗 Обращение с сайта", None)
+                return (
+                    f"🔗 Обращение по товару: «{card.name}» — {url}",
+                    f"товару «{card.name}»",
+                    None,
+                )
+        if payload.startswith("o") and len(payload) > 1:
+            order = await OrderRepository(self.session).get_order_by_number(payload[1:])
+            if order is not None:
+                return (
+                    f"🔗 Обращение по заказу №{order.number}",
+                    f"заказу №{order.number}",
+                    order.id,
+                )
+        return ("🔗 Обращение с сайта", None, None)
 
-    def _start_greeting(self, product_name: str | None) -> str:
+    def _start_greeting(self, greeting_name: str | None) -> str:
         """Build the auto-greeting sent back to the customer on ``/start``.
 
         Args:
-            product_name: The resolved product name, or ``None`` for the generic
-                greeting.
+            greeting_name: A ready-to-embed phrase (e.g. ``товару «X»`` or
+                ``заказу №Y``), or ``None`` for the generic greeting.
 
         Returns:
             str: The greeting text.
         """
-        if product_name:
+        if greeting_name:
             return (
-                f"Здравствуйте! Вы пишете по товару «{product_name}». "
+                f"Здравствуйте! Вы пишете по {greeting_name}. "
                 "Напишите ваш вопрос — мы на связи."
             )
         return "Здравствуйте! Напишите ваш вопрос — мы на связи."
@@ -309,6 +337,64 @@ class SupportService:
         await self.session.commit()
         await publish_support_event(self.redis, conv.id, "status")
         return conv
+
+    async def link_order(self, conversation_id: int, order_number: str) -> Order:
+        """Link a conversation to an order by its number (§).
+
+        Resolves the order by number, links it to the conversation and commits.
+        The router builds the order summary from the returned order.
+
+        Args:
+            conversation_id: The conversation to link.
+            order_number: The human-readable order number to resolve.
+
+        Returns:
+            Order: The linked order.
+
+        Raises:
+            OrderNotFoundError: If no order matches the number.
+            ConversationNotFoundError: If the conversation does not exist.
+        """
+        order = await OrderRepository(self.session).get_order_by_number(order_number)
+        if order is None:
+            raise OrderNotFoundError(f"Order {order_number} not found")
+        conv = await self.repo.set_linked_order(conversation_id, order.id)
+        if conv is None:
+            raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
+        await self.session.commit()
+        return order
+
+    async def unlink_order(self, conversation_id: int) -> None:
+        """Clear a conversation's order link and commit (§).
+
+        Args:
+            conversation_id: The conversation to unlink.
+
+        Raises:
+            ConversationNotFoundError: If the conversation does not exist.
+        """
+        conv = await self.repo.set_linked_order(conversation_id, None)
+        if conv is None:
+            raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
+        await self.session.commit()
+
+    async def get_linked_order(
+        self,
+        conversation: SupportConversation,
+    ) -> Order | None:
+        """Return the order a conversation is linked to, or ``None`` (§).
+
+        Args:
+            conversation: The conversation to resolve the link for.
+
+        Returns:
+            Order | None: The linked order, or ``None`` if unlinked.
+        """
+        if conversation.linked_order_id is None:
+            return None
+        return await OrderRepository(self.session).get_order_by_id(
+            conversation.linked_order_id
+        )
 
     async def purge_stale(self, retention_days: int) -> int:
         """Delete conversations inactive past the retention window.
