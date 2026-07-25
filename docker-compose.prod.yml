@@ -114,6 +114,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
       EMAIL_FROM: ${EMAIL_FROM:-orders@evix.md}
       CURRENCY: MDL
       DEFAULT_LANG: ro
