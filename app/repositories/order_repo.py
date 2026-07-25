@@ -243,6 +243,7 @@ class OrderRepository:
         delivery_city: str | None = None,
         delivery_street: str | None = None,
         delivery_zip: str | None = None,
+        promo_code: str | None = None,
     ) -> Order:
         """Instantiate and stage a new ``new`` / ``pending`` COD order (§9.6).
 
@@ -252,7 +253,7 @@ class OrderRepository:
             email: Contact email.
             phone: Contact phone.
             subtotal: Sum of line snapshots.
-            discount_total: Discount applied (0 in v1 — no promo).
+            discount_total: Discount applied (0 when no promo code was used).
             delivery_cost: Delivery charge.
             total: ``subtotal - discount_total + delivery_cost``.
             delivery_type: ``pickup`` or ``courier``.
@@ -261,6 +262,7 @@ class OrderRepository:
             delivery_city: Courier address snapshot — city, else ``None``.
             delivery_street: Courier address snapshot — street, else ``None``.
             delivery_zip: Courier address snapshot — postal code, else ``None``.
+            promo_code: Redeemed coupon code snapshot (soft link), else ``None``.
 
         Returns:
             Order: The staged (not yet flushed) order.
@@ -283,6 +285,7 @@ class OrderRepository:
             delivery_street=delivery_street,
             delivery_zip=delivery_zip,
             payment_method="cod",
+            promo_code=promo_code,
         )
         self.session.add(order)
         return order

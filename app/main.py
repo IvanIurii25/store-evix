@@ -13,6 +13,7 @@ from app.api.routers.admin_content_pages import router as admin_content_pages_ro
 from app.api.routers.admin_customers import router as admin_customers_router
 from app.api.routers.admin_dashboard import router as admin_dashboard_router
 from app.api.routers.admin_orders import router as admin_orders_router
+from app.api.routers.admin_promo import router as admin_promo_router
 from app.api.routers.admin_settings import router as admin_settings_router
 from app.api.routers.admin_support import router as admin_support_router
 from app.api.routers.auth import router as auth_router
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_customers_router, prefix=API_V1_PREFIX)
     app.include_router(admin_dashboard_router, prefix=API_V1_PREFIX)
     app.include_router(admin_settings_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_promo_router, prefix=API_V1_PREFIX)
     app.include_router(admin_content_pages_router, prefix=API_V1_PREFIX)
     app.include_router(admin_support_router, prefix=API_V1_PREFIX)
     app.include_router(site_router, prefix=API_V1_PREFIX)

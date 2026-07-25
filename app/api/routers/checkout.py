@@ -32,6 +32,12 @@ from app.services.checkout_service import (
     EmptyCartError,
     OutOfStockError,
 )
+from app.services.promo_service import (
+    PromoExpiredError,
+    PromoInvalidError,
+    PromoMinOrderError,
+    PromoUsageLimitError,
+)
 
 router = APIRouter(prefix="/checkout", tags=["checkout"])
 
@@ -76,6 +82,36 @@ def _caller_identity(
     return None, _read_session_token(request)
 
 
+def _promo_http_error(
+    exc: PromoInvalidError
+    | PromoExpiredError
+    | PromoMinOrderError
+    | PromoUsageLimitError,
+) -> HTTPException:
+    """Map a promo domain error to its HTTP status + coded envelope detail.
+
+    ``promo_invalid`` (unknown/disabled) → 404; ``promo_expired`` /
+    ``promo_min_order`` → 400; ``promo_usage_limit`` → 409. The ``code`` is
+    surfaced verbatim so the storefront can show a targeted message.
+
+    Args:
+        exc: The raised promo error.
+
+    Returns:
+        HTTPException: The mapped exception the router re-raises.
+    """
+    if isinstance(exc, PromoInvalidError):
+        http_status = status.HTTP_404_NOT_FOUND
+    elif isinstance(exc, PromoUsageLimitError):
+        http_status = status.HTTP_409_CONFLICT
+    else:
+        http_status = status.HTTP_400_BAD_REQUEST
+    return HTTPException(
+        status_code=http_status,
+        detail={"code": exc.code, "message": str(exc)},
+    )
+
+
 @router.post("/quote", response_model=QuoteOut)
 async def quote(
     data: QuoteRequest,
@@ -109,6 +145,7 @@ async def quote(
             delivery_type=data.delivery_type,
             delivery_address_id=data.delivery_address_id,
             delivery_address=data.delivery_address,
+            promo_code=data.promo_code,
             lang=lang,
         )
     except EmptyCartError as exc:
@@ -123,6 +160,13 @@ async def quote(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
+    except (
+        PromoInvalidError,
+        PromoExpiredError,
+        PromoMinOrderError,
+        PromoUsageLimitError,
+    ) as exc:
+        raise _promo_http_error(exc) from exc
 
 
 @router.post(
@@ -168,6 +212,7 @@ async def checkout(
             delivery_type=data.delivery_type,
             delivery_address_id=data.delivery_address_id,
             delivery_address=data.delivery_address,
+            promo_code=data.promo_code,
             lang=lang,
         )
     except EmptyCartError as exc:
@@ -182,6 +227,13 @@ async def checkout(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
+    except (
+        PromoInvalidError,
+        PromoExpiredError,
+        PromoMinOrderError,
+        PromoUsageLimitError,
+    ) as exc:
+        raise _promo_http_error(exc) from exc
     except OutOfStockError as exc:
         # Return the envelope directly so ``error.code`` is exactly
         # ``out_of_stock`` (the shared HTTPException handler always emits

@@ -5,8 +5,10 @@ server-side stock validation, delivery / discount / total computation, and the
 single-transaction creation of an order with snapshotted lines, race-safe stock
 decrement, cart conversion and initial status history (§9).
 
-Discounts: promo is NOT in v1 → ``discount_total`` is always 0 (§9.3). Tax: the
-``order`` table has no tax column, so tax is NOT persisted here (deferred, §9.5).
+Discounts: an optional promo code (feature A1, §2.5) is validated by
+:class:`~app.services.promo_service.PromoService` and subtracted from the
+subtotal; with no code ``discount_total`` is 0. Tax: the ``order`` table has no
+tax column, so tax is NOT persisted here (deferred, §9.5).
 
 The service knows nothing about HTTP; it raises domain errors the router maps to
 responses, and it owns its unit of work (one commit for the whole checkout, with
@@ -28,6 +30,7 @@ from app.models.user import Address
 from app.repositories.order_repo import NAME_LANG, OrderRepository
 from app.repositories.user_repo import UserRepository
 from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
+from app.services.promo_service import PromoService
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,7 @@ logger = logging.getLogger(__name__)
 PICKUP: str = "pickup"
 COURIER: str = "courier"
 
-# v1 has no promo engine → discount is always zero (§9.3).
+# Zero money constant (baseline discount / free delivery).
 _ZERO: Decimal = Decimal("0")
 
 
@@ -110,6 +113,7 @@ class CheckoutService:
         self.session = session
         self.repo = OrderRepository(session)
         self.user_repo = UserRepository(session)
+        self.promo_service = PromoService(session)
 
     # ------------------------------------------------------------------ #
     # Quote (idempotent predraft — no order created)
@@ -122,6 +126,7 @@ class CheckoutService:
         delivery_type: str,
         delivery_address_id: int | None,
         delivery_address: DeliveryAddressIn | None = None,
+        promo_code: str | None = None,
         lang: str = NAME_LANG,
     ) -> QuoteOut:
         """Compute the checkout totals without creating an order (§9, idempotent).
@@ -132,6 +137,7 @@ class CheckoutService:
             delivery_type: ``pickup`` or ``courier``.
             delivery_address_id: Saved address id (courier; logged-in users).
             delivery_address: Inline courier address (guest or user).
+            promo_code: Optional coupon code applied to the subtotal.
             lang: Requested line-name language (does not affect totals; kept
                 consistent with checkout so the quote mirrors the order).
 
@@ -144,6 +150,7 @@ class CheckoutService:
             DeliveryAddressForbiddenError: If ``delivery_address_id`` is not one
                 the caller owns (validated up front so the caller is not made to
                 submit before learning the id is unusable).
+            PromoError: If ``promo_code`` is supplied but not usable.
         """
         _cart, lines = await self._load_cart_lines(user_id, session_token, lang)
         # Validate ownership even though the delivery cost is owner-independent:
@@ -151,8 +158,13 @@ class CheckoutService:
         await self._resolve_delivery_snapshot(
             user_id, delivery_type, delivery_address_id, delivery_address
         )
+        discount_total = await self._resolve_discount(lines, promo_code)
         return self._quote_from_lines(
-            lines, delivery_type, delivery_address_id, delivery_address
+            lines,
+            delivery_type,
+            delivery_address_id,
+            delivery_address,
+            discount_total=discount_total,
         )
 
     # ------------------------------------------------------------------ #
@@ -168,6 +180,7 @@ class CheckoutService:
         delivery_type: str,
         delivery_address_id: int | None,
         delivery_address: DeliveryAddressIn | None = None,
+        promo_code: str | None = None,
         lang: str = NAME_LANG,
     ) -> OrderOut:
         """Create an order from the caller's cart in one transaction (§9.6).
@@ -185,6 +198,8 @@ class CheckoutService:
             phone: Contact phone (required, incl. guests).
             delivery_type: ``pickup`` or ``courier``.
             delivery_address_id: Address id (required for courier).
+            promo_code: Optional coupon code; re-validated here (the client's
+                quoted discount is never trusted) and snapshotted onto the order.
             lang: Requested language captured into each line's ``name_snapshot``
                 (unsupported / ``None`` fall back to :data:`NAME_LANG`).
 
@@ -197,16 +212,29 @@ class CheckoutService:
             DeliveryAddressForbiddenError: If ``delivery_address_id`` is not one
                 the caller owns.
             OutOfStockError: If any line's stock is insufficient at commit time.
+            PromoError: If ``promo_code`` is supplied but not usable.
         """
         cart, lines = await self._load_cart_lines(user_id, session_token, lang)
-        snap_name, snap_city, snap_street, snap_zip = (
-            await self._resolve_delivery_snapshot(
-                user_id, delivery_type, delivery_address_id, delivery_address
-            )
+        (
+            snap_name,
+            snap_city,
+            snap_street,
+            snap_zip,
+        ) = await self._resolve_delivery_snapshot(
+            user_id, delivery_type, delivery_address_id, delivery_address
         )
+        # Re-validate the coupon server-side: the discount is recomputed, never
+        # taken from the client. A promo that expired between quote and checkout
+        # raises here and no order is created.
+        discount_total = await self._resolve_discount(lines, promo_code)
         totals = self._quote_from_lines(
-            lines, delivery_type, delivery_address_id, delivery_address
+            lines,
+            delivery_type,
+            delivery_address_id,
+            delivery_address,
+            discount_total=discount_total,
         )
+        applied_code = promo_code if discount_total > _ZERO else None
 
         number = await self.repo.next_order_number()
         order = self.repo.add_order(
@@ -224,6 +252,7 @@ class CheckoutService:
             delivery_city=snap_city,
             delivery_street=snap_street,
             delivery_zip=snap_zip,
+            promo_code=applied_code,
         )
         await self.session.flush()  # assign order.id
         # Pull DB-side ``created_at`` (server_default) onto the instance so the
@@ -388,12 +417,43 @@ class CheckoutService:
             )
         return address
 
+    async def _resolve_discount(
+        self,
+        lines: list[_PricedLine],
+        promo_code: str | None,
+    ) -> Decimal:
+        """Validate the coupon (if any) and return the discount for the subtotal.
+
+        Single source of truth for "how much does this code take off", reused by
+        both :meth:`quote` and :meth:`checkout` so they agree. No code → zero.
+
+        Args:
+            lines: Resolved, stock-checked cart lines (source of the subtotal).
+            promo_code: Optional coupon code.
+
+        Returns:
+            Decimal: The discount amount (``0`` when no code is supplied).
+
+        Raises:
+            PromoError: If ``promo_code`` is supplied but not usable (unknown,
+                expired, below min-order, or usage-limited).
+        """
+        if not promo_code:
+            return _ZERO
+        subtotal = sum((line.line_total for line in lines), _ZERO)
+        _promo, discount = await self.promo_service.validate_and_compute(
+            promo_code, subtotal
+        )
+        return discount
+
     def _quote_from_lines(
         self,
         lines: list[_PricedLine],
         delivery_type: str,
         delivery_address_id: int | None,
         delivery_address: DeliveryAddressIn | None = None,
+        *,
+        discount_total: Decimal = _ZERO,
     ) -> QuoteOut:
         """Compute totals from resolved lines + delivery choice (§9.3–9.5).
 
@@ -402,6 +462,8 @@ class CheckoutService:
             delivery_type: ``pickup`` or ``courier``.
             delivery_address_id: Saved address id (courier; logged-in users).
             delivery_address: Inline courier address (guest or user).
+            discount_total: Promo discount to subtract from the subtotal (already
+                validated + clamped by :meth:`_resolve_discount`; default zero).
 
         Returns:
             QuoteOut: The computed breakdown.
@@ -410,7 +472,6 @@ class CheckoutService:
             DeliveryAddressRequiredError: If courier is chosen without an address.
         """
         subtotal = sum((line.line_total for line in lines), _ZERO)
-        discount_total = _ZERO
         has_address = delivery_address_id is not None or delivery_address is not None
         delivery_cost = self._delivery_cost(subtotal, delivery_type, has_address)
         total = subtotal - discount_total + delivery_cost

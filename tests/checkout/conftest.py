@@ -19,6 +19,7 @@ Run with ``EVIX_TEST_DB=evix_test_checkout``.
 """
 
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest_asyncio
@@ -35,6 +36,7 @@ from app.core.db import get_session
 from app.core.errors import register_exception_handlers
 from app.core.redis import get_redis
 from app.models.catalog import Category, Product, ProductTranslation
+from app.models.promo import PromoCode
 from app.models.user import Address, AppUser
 
 _API_V1_PREFIX = "/api/v1"
@@ -206,5 +208,44 @@ async def add_product(db_session: AsyncSession):
         )
         await db_session.flush()
         return product
+
+    return _add
+
+
+@pytest_asyncio.fixture
+async def add_promo(db_session: AsyncSession):
+    """Return a helper inserting a :class:`PromoCode` for the discount path.
+
+    Defaults to a currently-valid, active ``percent`` coupon; callers override
+    the window / type / limits to exercise the expired / min-order / limit paths.
+    """
+
+    async def _add(
+        code: str,
+        *,
+        discount_type: str = "percent",
+        discount_value: Decimal = Decimal("10"),
+        active_from: datetime | None = None,
+        active_to: datetime | None = None,
+        min_order_total: Decimal | None = None,
+        usage_limit: int | None = None,
+        is_active: bool = True,
+    ) -> PromoCode:
+        now = datetime.now(UTC)
+        promo = PromoCode(
+            code=code,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            active_from=active_from
+            if active_from is not None
+            else now - timedelta(days=1),
+            active_to=active_to if active_to is not None else now + timedelta(days=1),
+            min_order_total=min_order_total,
+            usage_limit=usage_limit,
+            is_active=is_active,
+        )
+        db_session.add(promo)
+        await db_session.flush()
+        return promo
 
     return _add

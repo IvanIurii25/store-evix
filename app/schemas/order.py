@@ -46,6 +46,12 @@ class QuoteRequest(BaseModel):
         default=None,
         description="Inline courier address (guest or user). Alternative to id.",
     )
+    promo_code: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Optional coupon code to apply to the subtotal.",
+    )
 
 
 class CheckoutRequest(BaseModel):
@@ -69,6 +75,12 @@ class CheckoutRequest(BaseModel):
     delivery_address: DeliveryAddressIn | None = Field(
         default=None,
         description="Inline courier address (guest or user). Alternative to id.",
+    )
+    promo_code: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Optional coupon code; re-validated server-side at order time.",
     )
 
 
