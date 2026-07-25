@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     # Rate limiting (§5.4), Redis-backed. Format "<count>/<window_seconds>".
     rate_limit_login: str = "5/60"
     rate_limit_checkout: str = "10/60"
+    # Registration is rare per human but a spam/enumeration target — a tight
+    # per-IP budget blocks account-flooding and throttles 409-based email probes.
+    rate_limit_register: str = "10/600"
+    # Refresh is legitimately frequent (access-token rotation); a generous per-IP
+    # budget only trips on obvious floods, not a NAT'd family behind one IP.
+    rate_limit_refresh: str = "60/60"
     # Pageview tracking is one hit per navigation — a generous per-IP budget
     # that only trips on obvious floods (admin §6.3).
     rate_limit_track: str = "120/60"

@@ -74,6 +74,22 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _security_headers(request, call_next):  # noqa: ANN001, ANN202
+        """Attach conservative security headers to every API response.
+
+        The API returns JSON (and admin-proxied bytes), never framed HTML, so
+        ``nosniff`` + ``DENY`` + a strict referrer policy are safe blanket
+        defaults. Storefront HTML security headers are set by the front (and the
+        Cloudflare edge); these harden the API surface itself.
+        """
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
+
     register_exception_handlers(app)
     app.include_router(health_router, prefix=API_V1_PREFIX)
     app.include_router(catalog_router, prefix=API_V1_PREFIX)

@@ -127,6 +127,42 @@ async def test_window_reset_lets_caller_through_again(
 
 
 @pytest.mark.asyncio
+async def test_register_is_rate_limited(client: AsyncClient) -> None:
+    """Registration trips ``429 rate_limited`` once its per-IP budget is spent."""
+    limit = int(settings.rate_limit_register.split("/")[0])
+    ip = "203.0.113.50"
+    body = {"email": "reg-flood@example.com", "password": "password123"}
+
+    for _ in range(limit):
+        code = await _post(client, "/api/v1/auth/register", body, client_ip=ip)
+        assert code != _RATE_LIMITED
+
+    resp = await client.post(
+        "/api/v1/auth/register", json=body, headers={"CF-Connecting-IP": ip}
+    )
+    assert resp.status_code == _RATE_LIMITED
+    assert resp.json()["error"]["code"] == "rate_limited"
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_rate_limited(client: AsyncClient) -> None:
+    """Refresh trips ``429 rate_limited`` once its per-IP budget is spent."""
+    limit = int(settings.rate_limit_refresh.split("/")[0])
+    ip = "203.0.113.60"
+    body = {"refresh": "invalid-token"}
+
+    for _ in range(limit):
+        code = await _post(client, "/api/v1/auth/refresh", body, client_ip=ip)
+        assert code != _RATE_LIMITED
+
+    resp = await client.post(
+        "/api/v1/auth/refresh", json=body, headers={"CF-Connecting-IP": ip}
+    )
+    assert resp.status_code == _RATE_LIMITED
+    assert resp.json()["error"]["code"] == "rate_limited"
+
+
+@pytest.mark.asyncio
 async def test_login_and_checkout_buckets_are_isolated(client: AsyncClient) -> None:
     """Exhausting the login window does not consume the checkout budget."""
     ip = "203.0.113.40"

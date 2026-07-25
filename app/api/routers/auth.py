@@ -75,7 +75,12 @@ def _read_refresh(request: Request, body: RefreshRequest | None) -> str:
     return token
 
 
-@router.post("/register", response_model=UserMe, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserMe,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limiter(settings.rate_limit_register, "register"))],
+)
 async def register(
     data: RegisterRequest,
     service: AuthService = Depends(get_auth_service),
@@ -101,7 +106,11 @@ async def login(
     return tokens
 
 
-@router.post("/refresh", response_model=TokenPair)
+@router.post(
+    "/refresh",
+    response_model=TokenPair,
+    dependencies=[Depends(rate_limiter(settings.rate_limit_refresh, "refresh"))],
+)
 async def refresh(
     request: Request,
     response: Response,

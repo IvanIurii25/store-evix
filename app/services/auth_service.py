@@ -42,6 +42,12 @@ from app.schemas.auth import (
 
 _BLACKLIST_PREFIX = "auth:blacklist:refresh:"
 
+# Precomputed argon2 hash verified against when the login user is unknown, so a
+# failed login costs one argon2 verify whether or not the email/phone exists —
+# closing the response-time oracle that would otherwise reveal registered
+# identifiers.
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(16))
+
 
 class AuthService:
     """Coordinates auth use-cases over the user repo and the Redis blacklist.
@@ -103,12 +109,11 @@ class AuthService:
             HTTPException: 401 on unknown user, inactive account, or bad password.
         """
         user = await self._resolve_login_user(data)
-        if user is None or not verify_password(data.password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials",
-            )
-        if not user.is_active:
+        # Always run one argon2 verify (against a dummy hash for an unknown user)
+        # so the response time does not reveal whether the identifier exists.
+        password_hash = user.password_hash if user else _DUMMY_PASSWORD_HASH
+        password_ok = verify_password(data.password, password_hash)
+        if user is None or not password_ok or not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid credentials",
