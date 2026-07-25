@@ -119,6 +119,7 @@ services:
       CURRENCY: MDL
       DEFAULT_LANG: ro
       COURIER_RATE: ${COURIER_RATE:-50}
+      FREE_DELIVERY_FROM: ${FREE_DELIVERY_FROM:-}
       RATE_LIMIT_LOGIN: 5/60
       RATE_LIMIT_CHECKOUT: 10/60
       # Telegram support bot (helpdesk). Empty → feature off. Set the token +
