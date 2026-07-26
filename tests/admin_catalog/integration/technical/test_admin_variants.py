@@ -198,6 +198,26 @@ async def test_cannot_clear_variation_attributes_with_variants(
     assert resp.json()["error"]["code"] == "invalid"
 
 
+async def test_set_variation_attributes_active_no_variants_409(
+    client: AsyncClient,
+) -> None:
+    """Marking an ACTIVE product variable while it has no variants yet is a clean
+    409 (publication rule), not an unhandled 500."""
+    product_id = await _make_product(client, "VAR-PUBGUARD")
+    activate = await client.patch(
+        f"/api/v1/admin/products/{product_id}", json={"is_active": True}
+    )
+    assert activate.status_code == 200, activate.text
+    color = await _make_attribute(client, "pubcolor")
+
+    resp = await client.put(
+        f"/api/v1/admin/products/{product_id}/variation-attributes",
+        json={"attribute_ids": [color]},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "not_publishable"
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint 3 — create variant + validations
 # --------------------------------------------------------------------------- #

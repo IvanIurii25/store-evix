@@ -600,7 +600,7 @@ async def bind_media_to_variant(
         media = await service.bind_media_to_variant(
             product_id, media_id, payload.variant_id
         )
-    except AdminNotFoundError as exc:
+    except (AdminNotFoundError, PublicationError) as exc:
         _raise_http(exc)
     return MediaAdminOut.model_validate(media)
 
@@ -652,7 +652,7 @@ async def set_variation_attributes(
     try:
         await service.set_variation_attributes(product_id, payload.attribute_ids)
         product = await service._get_product(product_id)  # noqa: SLF001
-    except (AdminNotFoundError, AdminValidationError) as exc:
+    except (AdminNotFoundError, AdminValidationError, PublicationError) as exc:
         _raise_http(exc)
     return await _build_product_out(service, product)
 
@@ -671,7 +671,12 @@ async def create_variant(
     """Create one variant (a full combination of variation-attribute values)."""
     try:
         variant = await service.create_variant(product_id, payload)
-    except (AdminNotFoundError, AdminValidationError, AdminConflictError) as exc:
+    except (
+        AdminNotFoundError,
+        AdminValidationError,
+        AdminConflictError,
+        PublicationError,
+    ) as exc:
         _raise_http(exc)
     return await _variant_out(service, variant)
 
@@ -693,7 +698,7 @@ async def generate_product_variants(
     """
     try:
         created, skipped = await service.generate_variants(product_id)
-    except (AdminNotFoundError, AdminValidationError) as exc:
+    except (AdminNotFoundError, AdminValidationError, PublicationError) as exc:
         _raise_http(exc)
     return VariantGenerateResult(
         created=[await _variant_out(service, variant) for variant in created],
@@ -711,7 +716,7 @@ async def update_variant(
     """Update a variant's price / stock / order / active flag."""
     try:
         variant = await service.update_variant(variant_id, payload)
-    except (AdminNotFoundError, AdminConflictError) as exc:
+    except (AdminNotFoundError, AdminConflictError, PublicationError) as exc:
         _raise_http(exc)
     return await _variant_out(service, variant)
 
@@ -728,7 +733,7 @@ async def delete_variant(
     """Delete a variant (its value links + image bindings)."""
     try:
         await service.delete_variant(variant_id)
-    except AdminNotFoundError as exc:
+    except (AdminNotFoundError, PublicationError) as exc:
         _raise_http(exc)
 
 
