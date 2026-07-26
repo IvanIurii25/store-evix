@@ -136,7 +136,9 @@ async def add_item(
         _set_session_cookie(response, token)
     service = CartService(session)
     try:
-        return await service.add_item(user_id, token, data.product_id, data.qty, lang)
+        return await service.add_item(
+            user_id, token, data.product_id, data.qty, lang, data.variant_id
+        )
     except ProductNotAvailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -151,6 +153,9 @@ async def update_item(
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
     lang: str = Query(default="ro", description="Display language (ru|ro)."),
+    variant_id: int | None = Query(
+        default=None, description="Variant id identifying the line (variable products)."
+    ),
 ) -> CartOut:
     """Set an absolute quantity on an existing cart line.
 
@@ -161,6 +166,7 @@ async def update_item(
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
         lang: Requested display language for line names (default ``ro``).
+        variant_id: Variant id disambiguating the line (variable products).
 
     Returns:
         CartOut: The re-rendered cart.
@@ -172,7 +178,9 @@ async def update_item(
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
     try:
-        return await service.update_item(user_id, token, product_id, data.qty, lang)
+        return await service.update_item(
+            user_id, token, product_id, data.qty, lang, variant_id
+        )
     except ItemNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -186,6 +194,9 @@ async def remove_item(
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
     lang: str = Query(default="ro", description="Display language (ru|ro)."),
+    variant_id: int | None = Query(
+        default=None, description="Variant id identifying the line (variable products)."
+    ),
 ) -> CartOut:
     """Remove a line from the cart.
 
@@ -195,6 +206,7 @@ async def remove_item(
         user: The authenticated user, or ``None`` for a guest.
         session: Injected async DB session.
         lang: Requested display language for line names (default ``ro``).
+        variant_id: Variant id disambiguating the line (variable products).
 
     Returns:
         CartOut: The re-rendered cart.
@@ -206,7 +218,7 @@ async def remove_item(
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
     try:
-        return await service.remove_item(user_id, token, product_id, lang)
+        return await service.remove_item(user_id, token, product_id, lang, variant_id)
     except ItemNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import normalize_lang
 from app.models.cart import Cart
-from app.models.catalog import Product
+from app.models.catalog import Product, ProductVariant
 from app.repositories.cart_repo import NAME_LANG, CartRepository
+from app.repositories.catalog_repo import CatalogRepository
 from app.schemas.cart import CartItemOut, CartOut
 
 
@@ -48,6 +49,7 @@ class CartService:
         """
         self.session = session
         self.repo = CartRepository(session)
+        self.catalog = CatalogRepository(session)
 
     # ------------------------------------------------------------------ #
     # Cart resolution
@@ -135,21 +137,39 @@ class CartService:
         Returns:
             CartOut: The recomputed cart projection.
         """
-        rows = await self.repo.list_items(cart_id, normalize_lang(lang))
+        lang = normalize_lang(lang)
+        rows = await self.repo.list_items(cart_id, lang)
+        variant_ids = [line.variant_id for line, _p, _n in rows if line.variant_id]
+        variants = await self.catalog.get_variants_by_ids(variant_ids)
+        labels = await self.catalog.get_variant_option_labels(variant_ids, lang)
+
         items: list[CartItemOut] = []
         subtotal = Decimal("0")
         item_count = 0
         for line, product, name in rows:
             if not product.is_active:
                 continue
-            line_total = product.price * line.qty
+            # Variable-product line: price/availability come from the variant; a
+            # stale line (variant gone or deactivated) is skipped, mirroring the
+            # deactivated-product rule so a bad line never breaks GET /cart.
+            variant = variants.get(line.variant_id) if line.variant_id else None
+            if line.variant_id is not None and (
+                variant is None or not variant.is_active
+            ):
+                continue
+            unit_price = variant.price if variant is not None else product.price
+            line_total = unit_price * line.qty
             subtotal += line_total
             item_count += line.qty
             items.append(
                 CartItemOut(
                     product_id=product.id,
+                    variant_id=line.variant_id,
                     name=name if name is not None else product.code,
-                    price=product.price,
+                    variant_label=labels.get(line.variant_id)
+                    if line.variant_id
+                    else None,
+                    price=unit_price,
                     qty=line.qty,
                     line_total=line_total,
                 )
@@ -166,6 +186,7 @@ class CartService:
         product_id: int,
         qty: int,
         lang: str = NAME_LANG,
+        variant_id: int | None = None,
     ) -> CartOut:
         """Add a product to the cart, or increment its ``qty`` if already present.
 
@@ -175,16 +196,21 @@ class CartService:
             product_id: Catalog product id to add.
             qty: Quantity to add.
             lang: Requested display language for the re-rendered cart.
+            variant_id: Chosen variant (required for variable products, forbidden
+                for simple ones).
 
         Returns:
             CartOut: The re-rendered cart.
 
         Raises:
-            ProductNotAvailableError: If the product is missing or inactive.
+            ProductNotAvailableError: If the product/variant is missing, inactive,
+                mismatched, or a required/forbidden variant rule is violated.
         """
-        product = await self._require_active_product(product_id)
+        product, variant = await self._resolve_purchasable(product_id, variant_id)
         cart = await self._get_or_create_cart(user_id, session_token)
-        await self.repo.add_or_increment_item(cart.id, product.id, qty)
+        await self.repo.add_or_increment_item(
+            cart.id, product.id, qty, variant.id if variant is not None else None
+        )
         rendered = await self._render(cart.id, lang)
         await self.session.commit()
         return rendered
@@ -196,6 +222,7 @@ class CartService:
         product_id: int,
         qty: int,
         lang: str = NAME_LANG,
+        variant_id: int | None = None,
     ) -> CartOut:
         """Set an absolute quantity on an existing cart line.
 
@@ -205,6 +232,7 @@ class CartService:
             product_id: Catalog product id whose line is being changed.
             qty: New absolute quantity.
             lang: Requested display language for the re-rendered cart.
+            variant_id: Variant id identifying the line (variable products).
 
         Returns:
             CartOut: The re-rendered cart.
@@ -215,7 +243,7 @@ class CartService:
         cart = await self._get_cart(user_id, session_token)
         if cart is None:
             raise ItemNotFoundError("Cart is empty")
-        updated = await self.repo.set_item_qty(cart.id, product_id, qty)
+        updated = await self.repo.set_item_qty(cart.id, product_id, qty, variant_id)
         if updated is None:
             raise ItemNotFoundError("Item not in cart")
         rendered = await self._render(cart.id, lang)
@@ -228,6 +256,7 @@ class CartService:
         session_token: UUID | None,
         product_id: int,
         lang: str = NAME_LANG,
+        variant_id: int | None = None,
     ) -> CartOut:
         """Remove a line from the cart.
 
@@ -236,6 +265,7 @@ class CartService:
             session_token: Guest cookie token.
             product_id: Catalog product id whose line is removed.
             lang: Requested display language for the re-rendered cart.
+            variant_id: Variant id identifying the line (variable products).
 
         Returns:
             CartOut: The re-rendered cart.
@@ -246,7 +276,7 @@ class CartService:
         cart = await self._get_cart(user_id, session_token)
         if cart is None:
             raise ItemNotFoundError("Cart is empty")
-        removed = await self.repo.delete_item(cart.id, product_id)
+        removed = await self.repo.delete_item(cart.id, product_id, variant_id)
         if not removed:
             raise ItemNotFoundError("Item not in cart")
         rendered = await self._render(cart.id, lang)
@@ -285,10 +315,14 @@ class CartService:
             return rendered
 
         for guest_line in await self.repo.list_raw_items(guest_cart.id):
-            target = await self.repo.get_item(user_cart.id, guest_line.product_id)
+            target = await self.repo.get_item(
+                user_cart.id, guest_line.product_id, guest_line.variant_id
+            )
             if target is not None:
                 target.qty += guest_line.qty
-                await self.repo.delete_item(guest_cart.id, guest_line.product_id)
+                await self.repo.delete_item(
+                    guest_cart.id, guest_line.product_id, guest_line.variant_id
+                )
             else:
                 await self.repo.move_item_to_cart(guest_line, user_cart.id)
         await self.repo.delete_cart(guest_cart.id)
@@ -300,19 +334,41 @@ class CartService:
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
-    async def _require_active_product(self, product_id: int) -> Product:
-        """Return an active product or raise, so inactive stock cannot be added.
+    async def _resolve_purchasable(
+        self, product_id: int, variant_id: int | None
+    ) -> tuple[Product, ProductVariant | None]:
+        """Resolve and validate what the customer is adding to the cart.
+
+        Rules: the product must be active. A variable product **requires** an
+        ``variant_id`` that exists, belongs to it, and is active. A simple product
+        **forbids** ``variant_id``.
 
         Args:
             product_id: Catalog product id.
+            variant_id: Chosen variant id, or ``None``.
 
         Returns:
-            Product: The active product.
+            tuple[Product, ProductVariant | None]: The product and the resolved
+                variant (``None`` for simple products).
 
         Raises:
-            ProductNotAvailableError: If the product is missing or inactive.
+            ProductNotAvailableError: On any missing/inactive/mismatched entity or
+                a violated required/forbidden-variant rule.
         """
         product = await self.session.get(Product, product_id)
         if product is None or not product.is_active:
             raise ProductNotAvailableError("Product not available")
-        return product
+        if product.has_variants:
+            if variant_id is None:
+                raise ProductNotAvailableError("Variant selection required")
+            variant = await self.catalog.get_variant(variant_id)
+            if (
+                variant is None
+                or variant.product_id != product.id
+                or not variant.is_active
+            ):
+                raise ProductNotAvailableError("Variant not available")
+            return product, variant
+        if variant_id is not None:
+            raise ProductNotAvailableError("Product has no variants")
+        return product, None

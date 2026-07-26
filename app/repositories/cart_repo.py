@@ -102,12 +102,22 @@ class CartRepository:
     # ------------------------------------------------------------------ #
     # Items
     # ------------------------------------------------------------------ #
-    async def get_item(self, cart_id: int, product_id: int) -> CartItem | None:
-        """Return a single cart line by ``(cart_id, product_id)``, if present.
+    @staticmethod
+    def _variant_match(variant_id: int | None):
+        """SQL predicate matching a line's ``variant_id`` (NULL-aware)."""
+        if variant_id is None:
+            return CartItem.variant_id.is_(None)
+        return CartItem.variant_id == variant_id
+
+    async def get_item(
+        self, cart_id: int, product_id: int, variant_id: int | None = None
+    ) -> CartItem | None:
+        """Return a single cart line by ``(cart_id, product_id, variant_id)``.
 
         Args:
             cart_id: Cart id.
             product_id: Catalog product id.
+            variant_id: Chosen variant id, or ``None`` for a simple-product line.
 
         Returns:
             CartItem | None: The line, or ``None``.
@@ -115,6 +125,7 @@ class CartRepository:
         stmt = select(CartItem).where(
             CartItem.cart_id == cart_id,
             CartItem.product_id == product_id,
+            self._variant_match(variant_id),
         )
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
@@ -123,26 +134,30 @@ class CartRepository:
         cart_id: int,
         product_id: int,
         qty: int,
+        variant_id: int | None = None,
     ) -> CartItem:
-        """Add a line, or increment ``qty`` if the product is already in the cart.
+        """Add a line, or increment ``qty`` if the same variant is already present.
 
-        Honours ``unique(cart_id, product_id)`` (§2.3): a repeat never inserts a
-        duplicate row.
+        Honours the per-variant uniqueness (§2.3): a repeat of the same
+        ``(cart, product, variant)`` increments rather than inserting a duplicate.
 
         Args:
             cart_id: Cart id.
             product_id: Catalog product id.
             qty: Quantity to add.
+            variant_id: Chosen variant id, or ``None`` for a simple product.
 
         Returns:
             CartItem: The created or updated line (flushed).
         """
-        existing = await self.get_item(cart_id, product_id)
+        existing = await self.get_item(cart_id, product_id, variant_id)
         if existing is not None:
             existing.qty += qty
             await self.session.flush()
             return existing
-        item = CartItem(cart_id=cart_id, product_id=product_id, qty=qty)
+        item = CartItem(
+            cart_id=cart_id, product_id=product_id, variant_id=variant_id, qty=qty
+        )
         self.session.add(item)
         await self.session.flush()
         return item
@@ -152,6 +167,7 @@ class CartRepository:
         cart_id: int,
         product_id: int,
         qty: int,
+        variant_id: int | None = None,
     ) -> CartItem | None:
         """Set an absolute ``qty`` on an existing line; ``None`` if it is absent.
 
@@ -159,23 +175,27 @@ class CartRepository:
             cart_id: Cart id.
             product_id: Catalog product id.
             qty: New absolute quantity.
+            variant_id: Chosen variant id, or ``None`` for a simple product.
 
         Returns:
             CartItem | None: The updated line, or ``None`` if no such line.
         """
-        item = await self.get_item(cart_id, product_id)
+        item = await self.get_item(cart_id, product_id, variant_id)
         if item is None:
             return None
         item.qty = qty
         await self.session.flush()
         return item
 
-    async def delete_item(self, cart_id: int, product_id: int) -> bool:
-        """Remove a line by ``(cart_id, product_id)``.
+    async def delete_item(
+        self, cart_id: int, product_id: int, variant_id: int | None = None
+    ) -> bool:
+        """Remove a line by ``(cart_id, product_id, variant_id)``.
 
         Args:
             cart_id: Cart id.
             product_id: Catalog product id.
+            variant_id: Chosen variant id, or ``None`` for a simple product.
 
         Returns:
             bool: ``True`` if a row was deleted, ``False`` if none matched.
@@ -183,6 +203,7 @@ class CartRepository:
         stmt = delete(CartItem).where(
             CartItem.cart_id == cart_id,
             CartItem.product_id == product_id,
+            self._variant_match(variant_id),
         )
         result = await self.session.execute(stmt)
         return bool(result.rowcount)

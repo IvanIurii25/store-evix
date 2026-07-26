@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models.cart import Cart, CartItem
-from app.models.catalog import Product, ProductTranslation
+from app.models.catalog import Product, ProductTranslation, ProductVariant
 from app.models.order import Order, OrderItem, OrderStatusHistory
 
 # Status of a live, still-editable cart (§2.3): only ``draft`` carts convert.
@@ -185,59 +185,83 @@ class OrderRepository:
     # ------------------------------------------------------------------ #
     # Stock decrement (race-safe conditional UPDATE)
     # ------------------------------------------------------------------ #
-    async def decrement_stock(self, product_id: int, qty: int) -> bool:
-        """Atomically decrement product stock, guarding against oversell (§9.6).
+    async def decrement_stock(
+        self, product_id: int, qty: int, variant_id: int | None = None
+    ) -> bool:
+        """Atomically decrement stock, guarding against oversell (§9.6).
 
-        Runs ``UPDATE product SET qty = qty - :n WHERE id = :id AND qty >= :n``
-        and reports whether a row was affected. A ``False`` result means another
+        Runs ``UPDATE ... SET qty = qty - :n WHERE id = :id AND qty >= :n`` and
+        reports whether a row was affected. A ``False`` result means another
         concurrent order already took the stock — the caller must roll back with
-        an ``out_of_stock`` error.
+        an ``out_of_stock`` error. For variable products the authority is the
+        ``product_variant`` row (``variant_id``), not ``product``.
 
         Args:
-            product_id: Catalog product id to decrement.
+            product_id: Catalog product id (used when ``variant_id`` is None).
             qty: Quantity to remove from stock.
+            variant_id: Variant to decrement instead of the product, if set.
 
         Returns:
             bool: ``True`` if stock was decremented, ``False`` on insufficient
                 stock (rowcount 0).
         """
-        stmt = (
-            update(Product)
-            .where(Product.id == product_id, Product.qty >= qty)
-            .values(qty=Product.qty - qty)
-        )
+        if variant_id is not None:
+            stmt = (
+                update(ProductVariant)
+                .where(ProductVariant.id == variant_id, ProductVariant.qty >= qty)
+                .values(qty=ProductVariant.qty - qty)
+            )
+        else:
+            stmt = (
+                update(Product)
+                .where(Product.id == product_id, Product.qty >= qty)
+                .values(qty=Product.qty - qty)
+            )
         result = await self.session.execute(stmt)
         return bool(result.rowcount)
 
     # ------------------------------------------------------------------ #
     # Stock increment (return on cancel)
     # ------------------------------------------------------------------ #
-    async def increment_stock(self, product_id: int, qty: int) -> bool:
-        """Atomically return stock to a product and report a 0 → >0 crossing (§8).
+    async def increment_stock(
+        self, product_id: int, qty: int, variant_id: int | None = None
+    ) -> bool:
+        """Atomically return stock and report a 0 → >0 crossing (§8).
 
         Mirror of :meth:`decrement_stock` for the cancel path: runs
-        ``UPDATE product SET qty = qty + :n WHERE id = :id`` (no ``qty >= :n``
-        guard — a return is always valid). Before the update it reads the current
-        stock so it can report whether the product was at zero, i.e. this return
-        crosses ``0 → >0`` and should trigger a restock notification.
+        ``UPDATE ... SET qty = qty + :n WHERE id = :id`` (no ``qty >= :n`` guard —
+        a return is always valid). Before the update it reads the current stock so
+        it can report whether the row was at zero, i.e. this return crosses
+        ``0 → >0``. For variable products the credited row is the variant.
 
         Args:
-            product_id: Catalog product id to credit.
+            product_id: Catalog product id (used when ``variant_id`` is None).
             qty: Quantity to add back to stock.
+            variant_id: Variant to credit instead of the product, if set.
 
         Returns:
-            bool: ``True`` if the product was at ``qty == 0`` before the increment
-                (so it just crossed back into stock), else ``False``. A missing
-                product row (no rowcount) also yields ``False``.
+            bool: ``True`` if the row was at ``qty == 0`` before the increment (so
+                it just crossed back into stock), else ``False``. A missing row
+                (no rowcount) also yields ``False``.
         """
-        before = await self.session.scalar(
-            select(Product.qty).where(Product.id == product_id)
-        )
-        stmt = (
-            update(Product)
-            .where(Product.id == product_id)
-            .values(qty=Product.qty + qty)
-        )
+        if variant_id is not None:
+            before = await self.session.scalar(
+                select(ProductVariant.qty).where(ProductVariant.id == variant_id)
+            )
+            stmt = (
+                update(ProductVariant)
+                .where(ProductVariant.id == variant_id)
+                .values(qty=ProductVariant.qty + qty)
+            )
+        else:
+            before = await self.session.scalar(
+                select(Product.qty).where(Product.id == product_id)
+            )
+            stmt = (
+                update(Product)
+                .where(Product.id == product_id)
+                .values(qty=Product.qty + qty)
+            )
         result = await self.session.execute(stmt)
         return bool(result.rowcount) and before == 0
 
@@ -335,15 +359,18 @@ class OrderRepository:
         name_snapshot: str,
         price_snapshot: Decimal,
         qty: int,
+        variant_id: int | None = None,
     ) -> OrderItem:
         """Stage one order line with its name/price snapshot (§2.4).
 
         Args:
             order_id: Parent order id.
             product_id: Source product id (``SET NULL`` on delete, §11).
-            name_snapshot: Product name at order time.
-            price_snapshot: Product price at order time.
+            name_snapshot: Product name at order time (includes chosen options).
+            price_snapshot: Product/variant price at order time.
             qty: Quantity ordered.
+            variant_id: Source variant id for variable products (``SET NULL`` on
+                delete); ``None`` for simple products.
 
         Returns:
             OrderItem: The staged (not yet flushed) line.
@@ -351,6 +378,7 @@ class OrderRepository:
         item = OrderItem(
             order_id=order_id,
             product_id=product_id,
+            variant_id=variant_id,
             name_snapshot=name_snapshot,
             price_snapshot=price_snapshot,
             qty=qty,

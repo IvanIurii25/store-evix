@@ -352,6 +352,7 @@ async def quick_buy(
     try:
         return await service.quick_buy(
             product_id=data.product_id,
+            variant_id=data.variant_id,
             phone=data.phone,
             name=data.name,
             email=data.email,

@@ -709,6 +709,68 @@ class CatalogRepository:
                 result[variant_id] = url
         return result
 
+    async def get_variant(self, variant_id: int) -> ProductVariant | None:
+        """Fetch one variant row by id (buy-path validation)."""
+        return await self.session.get(ProductVariant, variant_id)
+
+    async def get_variants_by_ids(
+        self, variant_ids: list[int]
+    ) -> dict[int, ProductVariant]:
+        """Return ``{id: ProductVariant}`` for the given variant ids (no N+1)."""
+        if not variant_ids:
+            return {}
+        stmt = select(ProductVariant).where(ProductVariant.id.in_(variant_ids))
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return {row.id: row for row in rows}
+
+    async def get_variant_option_labels(
+        self, variant_ids: list[int], lang: str
+    ) -> dict[int, str]:
+        """Return ``{variant_id: "Bej, 40×60"}`` — localized options, in selector
+        order (variation-attribute position), joined for display/snapshot.
+        """
+        if not variant_ids:
+            return {}
+        stmt = (
+            select(
+                ProductVariantValue.variant_id,
+                AttributeValueTranslation.value,
+            )
+            .join(
+                AttributeValue,
+                AttributeValue.id == ProductVariantValue.value_id,
+            )
+            .join(
+                AttributeValueTranslation,
+                and_(
+                    AttributeValueTranslation.value_id == AttributeValue.id,
+                    AttributeValueTranslation.lang == lang,
+                ),
+            )
+            .join(
+                ProductVariant,
+                ProductVariant.id == ProductVariantValue.variant_id,
+            )
+            .join(
+                ProductVariationAttribute,
+                and_(
+                    ProductVariationAttribute.product_id == ProductVariant.product_id,
+                    ProductVariationAttribute.attribute_id
+                    == AttributeValue.attribute_id,
+                ),
+            )
+            .where(ProductVariantValue.variant_id.in_(variant_ids))
+            .order_by(
+                ProductVariantValue.variant_id,
+                ProductVariationAttribute.position,
+                AttributeValue.id,
+            )
+        )
+        parts: dict[int, list[str]] = {}
+        for variant_id, value in (await self.session.execute(stmt)).all():
+            parts.setdefault(variant_id, []).append(value)
+        return {vid: ", ".join(vals) for vid, vals in parts.items()}
+
     # ------------------------------------------------------------------ #
     # product_card read-model (§5.2) write side
     # ------------------------------------------------------------------ #

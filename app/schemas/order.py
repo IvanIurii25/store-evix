@@ -100,6 +100,9 @@ class QuickBuyRequest(BaseModel):
     """
 
     product_id: int = Field(..., gt=0, description="Product to buy in one click.")
+    variant_id: int | None = Field(
+        default=None, gt=0, description="Chosen variant id (variable products)."
+    )
     phone: str = Field(..., min_length=3, description="Contact phone (required).")
     name: str | None = Field(
         default=None,

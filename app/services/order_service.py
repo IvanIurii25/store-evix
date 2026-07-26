@@ -182,14 +182,20 @@ class OrderService:
                 returned_lines = 0
                 returned_units = 0
                 for item in items:
-                    if item.product_id is None:
+                    if item.product_id is None and item.variant_id is None:
                         continue
                     crossed_zero = await self.repo.increment_stock(
-                        item.product_id, item.qty
+                        item.product_id, item.qty, item.variant_id
                     )
                     returned_lines += 1
                     returned_units += item.qty
-                    if crossed_zero:
+                    # Restock notifications are product-level only; variable
+                    # products opt out in v1, so variant lines never notify.
+                    if (
+                        crossed_zero
+                        and item.variant_id is None
+                        and item.product_id is not None
+                    ):
                         self._notify_restocked(item.product_id)
                 await self.session.commit()
                 logger.info(

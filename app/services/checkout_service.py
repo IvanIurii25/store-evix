@@ -26,6 +26,7 @@ from app.core.config import settings
 from app.models.cart import Cart
 from app.models.order import Order, OrderItem
 from app.models.user import Address
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.order_repo import NAME_LANG, OrderRepository
 from app.repositories.user_repo import UserRepository
 from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
@@ -106,10 +107,18 @@ class ProductNotFoundError(CheckoutError):
 class _PricedLine:
     """A resolved cart line ready to price / persist (internal to checkout)."""
 
-    __slots__ = ("product_id", "name", "price", "qty")
+    __slots__ = ("product_id", "variant_id", "name", "price", "qty")
 
-    def __init__(self, product_id: int, name: str, price: Decimal, qty: int) -> None:
+    def __init__(
+        self,
+        product_id: int,
+        name: str,
+        price: Decimal,
+        qty: int,
+        variant_id: int | None = None,
+    ) -> None:
         self.product_id = product_id
+        self.variant_id = variant_id
         self.name = name
         self.price = price
         self.qty = qty
@@ -133,6 +142,7 @@ class CheckoutService:
         self.repo = OrderRepository(session)
         self.user_repo = UserRepository(session)
         self.promo_service = PromoService(session)
+        self.catalog = CatalogRepository(session)
 
     # ------------------------------------------------------------------ #
     # Quote (idempotent predraft — no order created)
@@ -288,6 +298,7 @@ class CheckoutService:
         email: str | None = None,
         qty: int = 1,
         lang: str = NAME_LANG,
+        variant_id: int | None = None,
     ) -> OrderOut:
         """Create a one-product COD order without a cart or full checkout (A2).
 
@@ -316,19 +327,45 @@ class CheckoutService:
             ProductNotFoundError: If no active product matches ``product_id``.
             OutOfStockError: If stock is insufficient (at read or at decrement).
         """
-        resolved = await self.repo.get_product_with_name(
-            product_id, normalize_lang(lang)
-        )
+        norm_lang = normalize_lang(lang)
+        resolved = await self.repo.get_product_with_name(product_id, norm_lang)
         if resolved is None:
             raise ProductNotFoundError(product_id)
         product, name_snapshot = resolved
-        if qty > product.qty:
+
+        # Resolve the variant for variable products (required); simple products
+        # forbid one. Price/stock/label then come from the chosen variant.
+        variant = None
+        if product.has_variants:
+            if variant_id is None:
+                raise ProductNotFoundError(product_id)
+            variant = await self.catalog.get_variant(variant_id)
+            if (
+                variant is None
+                or variant.product_id != product.id
+                or not variant.is_active
+            ):
+                raise ProductNotFoundError(product_id)
+        elif variant_id is not None:
+            raise ProductNotFoundError(product_id)
+
+        available = variant.qty if variant is not None else product.qty
+        if qty > available:
             raise OutOfStockError(product.id)
 
+        base_name = name_snapshot if name_snapshot is not None else product.code
+        if variant is not None:
+            labels = await self.catalog.get_variant_option_labels(
+                [variant.id], norm_lang
+            )
+            label = labels.get(variant.id)
+            if label:
+                base_name = f"{base_name} ({label})"
         line = _PricedLine(
             product_id=product.id,
-            name=name_snapshot if name_snapshot is not None else product.code,
-            price=product.price,
+            variant_id=variant.id if variant is not None else None,
+            name=base_name,
+            price=variant.price if variant is not None else product.price,
             qty=qty,
         )
         totals = self._quote_from_lines([line], PICKUP, None)
@@ -442,6 +479,7 @@ class CheckoutService:
                 self.repo.add_order_item(
                     order_id=order.id,
                     product_id=line.product_id,
+                    variant_id=line.variant_id,
                     name_snapshot=line.name,
                     price_snapshot=line.price,
                     qty=line.qty,
@@ -470,7 +508,9 @@ class CheckoutService:
         # flash sale. Rollback on oversell correctly undoes the earlier cart and
         # status-history writes too.
         for line in lines:
-            decremented = await self.repo.decrement_stock(line.product_id, line.qty)
+            decremented = await self.repo.decrement_stock(
+                line.product_id, line.qty, line.variant_id
+            )
             if not decremented:
                 await self.session.rollback()
                 raise OutOfStockError(line.product_id)
@@ -537,18 +577,36 @@ class CheckoutService:
         if cart is None:
             raise EmptyCartError("Cart is empty")
 
+        norm_lang = normalize_lang(lang)
+        lines = await self.repo.list_cart_lines(cart.id, norm_lang)
+        variant_ids = [ci.variant_id for ci, _p, _n in lines if ci.variant_id]
+        variants = await self.catalog.get_variants_by_ids(variant_ids)
+        labels = await self.catalog.get_variant_option_labels(variant_ids, norm_lang)
+
         priced: list[_PricedLine] = []
-        lines = await self.repo.list_cart_lines(cart.id, normalize_lang(lang))
         for cart_item, product, name in lines:
             if not product.is_active:
                 continue
-            if cart_item.qty > product.qty:
+            # Variable-product line: price/stock come from the variant. A stale
+            # line (variant gone or deactivated) is skipped like an inactive
+            # product, so it never blocks checkout of the rest of the cart.
+            variant = variants.get(cart_item.variant_id) if cart_item.variant_id else None
+            if cart_item.variant_id is not None and (
+                variant is None or not variant.is_active
+            ):
+                continue
+            unit_price = variant.price if variant is not None else product.price
+            available = variant.qty if variant is not None else product.qty
+            if cart_item.qty > available:
                 raise OutOfStockError(product.id)
+            base_name = name if name is not None else product.code
+            label = labels.get(cart_item.variant_id) if cart_item.variant_id else None
             priced.append(
                 _PricedLine(
                     product_id=product.id,
-                    name=name if name is not None else product.code,
-                    price=product.price,
+                    variant_id=cart_item.variant_id,
+                    name=f"{base_name} ({label})" if label else base_name,
+                    price=unit_price,
                     qty=cart_item.qty,
                 )
             )

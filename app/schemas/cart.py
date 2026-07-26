@@ -18,6 +18,10 @@ class AddItem(BaseModel):
     """Request body for ``POST /cart/items`` — add or increment a product."""
 
     product_id: int = Field(..., gt=0, description="Catalog product id to add.")
+    # Required for variable products (the chosen variant); omit for simple ones.
+    variant_id: int | None = Field(
+        default=None, gt=0, description="Chosen variant id (variable products)."
+    )
     qty: int = Field(..., gt=0, description="Quantity to add (increments if present).")
 
 
@@ -31,7 +35,11 @@ class CartItemOut(BaseModel):
     """One cart line with its live price snapshot and computed line total (§2.3)."""
 
     product_id: int
+    # Set for a variable-product line (the chosen variant); NULL for simple lines.
+    variant_id: int | None = None
     name: str
+    # Localized chosen options, e.g. "Bej, 40×60" — for display next to the name.
+    variant_label: str | None = None
     price: Decimal
     qty: int
     line_total: Decimal
