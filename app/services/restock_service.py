@@ -54,6 +54,12 @@ class ProductInStockError(RestockError):
     code = "in_stock"
 
 
+class RestockUnsupportedError(RestockError):
+    """Restock subscriptions are not supported for this product (v1: variable)."""
+
+    code = "unsupported"
+
+
 class RestockService:
     """Restock-subscription operations bound to one session."""
 
@@ -84,11 +90,18 @@ class RestockService:
 
         Raises:
             RestockNotFoundError: If the product does not exist.
+            RestockUnsupportedError: If the product is variable (v1 opt-out).
             ProductInStockError: If the product is currently in stock (``qty>0``).
         """
         product = await self.session.get(Product, product_id)
         if product is None:
             raise RestockNotFoundError(f"Product {product_id} not found")
+        # v1: variable products opt out of restock — stock is per-variant, so a
+        # product-level subscription is meaningless (per-variant restock is P6).
+        if product.has_variants:
+            raise RestockUnsupportedError(
+                f"Product {product_id} is variable; restock is not available"
+            )
         if product.qty > 0:
             raise ProductInStockError(
                 f"Product {product_id} is in stock; subscription not needed"

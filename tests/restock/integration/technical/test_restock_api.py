@@ -101,6 +101,23 @@ async def test_subscribe_in_stock_rejected_400(
     assert resp.json()["error"]["code"] == "in_stock"
 
 
+async def test_subscribe_variable_rejected_400(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """A variable product opts out of restock in v1 → 400 ``unsupported`` (P2f)."""
+    product = await make_product(db_session, code="p-var", qty=0)
+    product.has_variants = True
+    await db_session.flush()
+
+    resp = await client.post(
+        "/api/v1/restock/subscriptions",
+        json={"product_id": product.id, "lang": "ru"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "unsupported"
+
+
 async def test_subscribe_missing_product_404(client: AsyncClient) -> None:
     """Subscribing to a nonexistent product is a 404."""
     resp = await client.post(

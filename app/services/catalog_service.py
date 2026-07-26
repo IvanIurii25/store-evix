@@ -666,6 +666,15 @@ class CatalogService:
                 "Cannot publish product "
                 f"{product_id}: missing translations for {sorted(missing)}"
             )
+        # A variable product needs at least one active variant to be buyable.
+        if product.has_variants:
+            v_min, _v_max, _stock, _sale = await self.repo.get_variant_aggregate(
+                product_id
+            )
+            if v_min is None:
+                raise PublicationError(
+                    f"Cannot publish variable product {product_id}: no active variants"
+                )
 
     async def rebuild_card(self, product_id: int) -> int:
         """Rebuild the ``product_card`` rows for one product (§5.2).

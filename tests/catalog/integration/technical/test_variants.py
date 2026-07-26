@@ -17,6 +17,7 @@ from app.models.catalog import (
     ProductVariantValue,
     ProductVariationAttribute,
 )
+from app.services.catalog_service import CatalogService, PublicationError
 
 
 async def _seed_color_attribute(session) -> dict[str, int]:
@@ -173,3 +174,40 @@ async def test_uniform_price_variants_have_no_range(seed):
     ).scalar_one()
     assert card.price == Decimal("199.00")
     assert card.price_max is None
+
+
+@pytest.mark.asyncio
+async def test_publication_rule_variable_requires_active_variant(seed):
+    """A variable product cannot be published without an active variant (P2)."""
+    session = seed["session"]
+    await seed["build_tree"]()
+    await seed["add_product"](
+        session,
+        product_id=510,
+        category_id=2,
+        code="VP-510",
+        price=Decimal("100.00"),
+        qty=0,
+        slugs={"ru": "novar-ru", "ro": "novar-ro"},
+        names={"ru": "Товар", "ro": "Produs"},
+    )
+    await session.flush()
+    product = await session.get(Product, 510)
+    product.has_variants = True
+    await session.flush()
+    service: CatalogService = seed["service"]
+
+    with pytest.raises(PublicationError):
+        await service.assert_publishable(510)
+
+    session.add(
+        ProductVariant(
+            product_id=510,
+            price=Decimal("100.00"),
+            qty=3,
+            position=0,
+            is_active=True,
+        )
+    )
+    await session.flush()
+    await service.assert_publishable(510)  # no raise now
