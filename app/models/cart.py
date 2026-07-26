@@ -13,9 +13,10 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Index,
     Integer,
     String,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -49,11 +50,30 @@ class Cart(Base, TimestampMixin):
 
 
 class CartItem(Base):
-    """Line item in a :class:`Cart`; price is NOT stored here (§2.3)."""
+    """Line item in a :class:`Cart`; price is NOT stored here (§2.3).
+
+    Uniqueness is split by variant (Postgres treats NULLs as distinct, so a
+    single ``(cart_id, product_id, variant_id)`` constraint would let simple
+    products duplicate): simple products (``variant_id IS NULL``) get one line
+    per product; variable products get one line per variant.
+    """
 
     __tablename__ = "cart_item"
     __table_args__ = (
-        UniqueConstraint("cart_id", "product_id", name="cart_item_cart_product"),
+        Index(
+            "uq_cart_item_cart_product",
+            "cart_id",
+            "product_id",
+            unique=True,
+            postgresql_where=text("variant_id IS NULL"),
+        ),
+        Index(
+            "uq_cart_item_cart_variant",
+            "cart_id",
+            "variant_id",
+            unique=True,
+            postgresql_where=text("variant_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -66,5 +86,11 @@ class CartItem(Base):
         BigInteger,
         ForeignKey("product.id"),
         nullable=False,
+    )
+    # Set for variable products (the chosen variant); NULL for simple products.
+    variant_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("product_variant.id"),
+        nullable=True,
     )
     qty: Mapped[int] = mapped_column(Integer, nullable=False)

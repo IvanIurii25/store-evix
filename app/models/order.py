@@ -107,6 +107,14 @@ class OrderItem(Base):
         ForeignKey("product.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Soft link to the purchased variant (variable products); SET NULL so orders
+    # survive variant deletion. The chosen options are also baked into
+    # ``name_snapshot`` for human-readable history even if the variant is gone.
+    variant_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("product_variant.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     name_snapshot: Mapped[str] = mapped_column(String, nullable=False)
     price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
