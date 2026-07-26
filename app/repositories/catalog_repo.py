@@ -323,6 +323,40 @@ class CatalogRepository:
         rows = (await self.session.execute(stmt)).scalars().all()
         return list(rows)
 
+    async def load_related_cards_by_ids(
+        self,
+        product_ids: list[int],
+        lang: str,
+        exclude_product_id: int,
+    ) -> dict[int, ProductCard]:
+        """Batch-hydrate buyable cards for the given ids in one query (no N+1).
+
+        Hydrates the ES-ranked candidate ids for cross-sell: reads the same
+        ``product_card`` read-model as the listing, keeping only ``is_active``
+        **and** ``in_stock`` rows (cross-sell must be buyable — the authoritative
+        stock check ES cannot do). Returned as a map so the caller can preserve
+        the ES relevance order; missing / OOS / other-lang ids are simply absent.
+
+        Args:
+            product_ids: Candidate product ids (in any order).
+            lang: Request language code (``product_card`` is keyed by lang).
+            exclude_product_id: The seed product, always excluded from its own rail.
+
+        Returns:
+            dict[int, ProductCard]: Map ``product_id -> card`` for buyable cards.
+        """
+        if not product_ids:
+            return {}
+        stmt = select(ProductCard).where(
+            ProductCard.lang == lang,
+            ProductCard.is_active.is_(True),
+            ProductCard.in_stock.is_(True),
+            ProductCard.product_id.in_(product_ids),
+            ProductCard.product_id != exclude_product_id,
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return {card.product_id: card for card in rows}
+
     @staticmethod
     def order_columns_for(sort: str) -> list:
         """Return ORDER BY expressions for a sort key (total order via product_id)."""
@@ -693,9 +727,7 @@ class CatalogRepository:
             result.setdefault(variant_id, []).append(value_id)
         return result
 
-    async def get_variant_image_urls(
-        self, variant_ids: list[int]
-    ) -> dict[int, str]:
+    async def get_variant_image_urls(self, variant_ids: list[int]) -> dict[int, str]:
         """Return ``{variant_id: main_image_url}`` (lowest-position media each)."""
         if not variant_ids:
             return {}

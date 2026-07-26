@@ -13,11 +13,13 @@ maps to responses.
 import base64
 import binascii
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.catalog import ALLOWED_LANGS, ProductCard
 from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.review_repo import ReviewRepository
@@ -39,9 +41,16 @@ from app.schemas.catalog import (
     VariationValueOut,
 )
 
+logger = logging.getLogger(__name__)
+
 # Listing page size for keyset pagination (§5.3).
 DEFAULT_PAGE_SIZE: int = 24
 MAX_PAGE_SIZE: int = 100
+
+# Related products (ES): over-fetch candidates so enough survive the
+# authoritative in-stock filter, capped so a huge limit can't fan out unbounded.
+_RELATED_OVERFETCH_FACTOR: int = 5
+_RELATED_MAX_CANDIDATES: int = 50
 
 # Sort keys accepted by the listing endpoint (§4).
 PRICE_SORTS: frozenset[str] = frozenset({"price_asc", "price_desc"})
@@ -416,17 +425,22 @@ class CatalogService:
         lang: str,
         limit: int,
     ) -> list[ProductCardOut]:
-        """Return in-stock sibling products for cross-sell on the product page.
+        """Return buyable "similar products" for cross-sell on the product page.
+
+        Ranking (when the ES backend is selected and reachable): content
+        similarity via Elasticsearch ``more_like_this`` over name / attributes /
+        category / description — genuinely similar items, cross-category with the
+        product's own category boosted. ES only ranks ids; the buyable cards are
+        hydrated from ``product_card`` (the authoritative ``in_stock`` filter),
+        mirroring the search pipeline. If similar items don't fill the rail it is
+        topped up with the same-category newest set, so the rail is never thin.
+
+        Fallback (ES off, unreachable, or an error): the same-category newest
+        set — the original behaviour — so the rail never goes dark.
 
         Best-effort and never 404s (the PDP already 404s a missing product): an
-        unknown slug, a product with no card in the language, or a product whose
-        category has no other in-stock siblings all yield an empty list.
-
-        Siblings are read from the same ``product_card`` read-model as the
-        listing (so cards match field-for-field), filtered to ``is_active`` **and**
-        ``in_stock`` (cross-sell must be buyable), scoped to the product's own
-        ``category_id``, excluding the product itself, newest-first, capped at
-        ``limit``. One query, no N+1.
+        unknown slug, or a product with no card in the language, yields an empty
+        list.
 
         Args:
             slug: Localized slug of the current product.
@@ -434,8 +448,8 @@ class CatalogService:
             limit: Maximum number of related cards to return.
 
         Returns:
-            list[ProductCardOut]: In-stock sibling cards (newest-first), possibly
-                empty.
+            list[ProductCardOut]: Buyable related cards (most-similar first when
+                ES-ranked), possibly empty.
         """
         translation = await self.repo.get_product_translation_by_slug(slug, lang)
         if translation is None:
@@ -443,6 +457,17 @@ class CatalogService:
         card = await self.repo.get_card(translation.product_id, lang)
         if card is None:
             return []
+
+        if settings.search_uses_elastic:
+            try:
+                return await self._related_elastic(card, lang, limit)
+            except Exception as exc:  # noqa: BLE001 — any ES failure → fallback
+                logger.warning(
+                    "es_related_failed pid=%s err=%s — falling back to postgres",
+                    card.product_id,
+                    exc,
+                )
+
         sibling_cards = await self.repo.list_related_cards(
             category_id=card.category_id,
             lang=lang,
@@ -450,6 +475,63 @@ class CatalogService:
             limit=limit,
         )
         return [self._card_to_out(sibling) for sibling in sibling_cards]
+
+    async def _related_elastic(
+        self, card: ProductCard, lang: str, limit: int
+    ) -> list[ProductCardOut]:
+        """ES-ranked related cards: MLT candidates → buyable hydration → top-up.
+
+        Fetches content-similar candidate ids from ES (over-fetched, since some
+        get dropped by the in-stock filter), hydrates the buyable ones from
+        ``product_card`` preserving ES relevance order, and — if fewer than
+        ``limit`` survive — tops up with the same-category newest set so the rail
+        is always full (excluding the seed and anything already picked).
+
+        Args:
+            card: The seed product's own card (source of id + category).
+            lang: Request language code.
+            limit: Target number of related cards.
+
+        Returns:
+            list[ProductCardOut]: Up to ``limit`` buyable cards, most-similar first.
+        """
+        from app.search.es.related import fetch_related_ids
+
+        overfetch = min(limit * _RELATED_OVERFETCH_FACTOR, _RELATED_MAX_CANDIDATES)
+        candidate_ids = await fetch_related_ids(card.product_id, lang, overfetch)
+        hydrated = await self.repo.load_related_cards_by_ids(
+            candidate_ids, lang, exclude_product_id=card.product_id
+        )
+
+        picked: list[ProductCard] = []
+        seen: set[int] = {card.product_id}
+        for pid in candidate_ids:  # preserve ES relevance order
+            sibling = hydrated.get(pid)
+            if sibling is None:
+                continue
+            picked.append(sibling)
+            seen.add(pid)
+            if len(picked) >= limit:
+                break
+
+        if len(picked) < limit:
+            # Top-up with same-category newest (the fallback logic). Over-fetch by
+            # the number already seen so enough remain after filtering them out.
+            topup = await self.repo.list_related_cards(
+                category_id=card.category_id,
+                lang=lang,
+                exclude_product_id=card.product_id,
+                limit=limit + len(seen),
+            )
+            for sibling in topup:
+                if sibling.product_id in seen:
+                    continue
+                picked.append(sibling)
+                seen.add(sibling.product_id)
+                if len(picked) >= limit:
+                    break
+
+        return [self._card_to_out(sibling) for sibling in picked]
 
     # ------------------------------------------------------------------ #
     # Product detail (PDP)
