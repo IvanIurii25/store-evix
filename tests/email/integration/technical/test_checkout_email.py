@@ -1,10 +1,11 @@
-"""Integration: checkout fires the confirmation email as a post-commit effect.
+"""Integration: checkout enqueues the confirmation email as a post-commit effect.
 
 Exercises the real :class:`CheckoutService` against the commit-safe test session.
-The sender is monkeypatched at its import site in ``checkout_service`` so we can
-assert (a) it is called after a successful order creation with the right ``to``
-and order number, and (b) a sender failure is swallowed — the order still
-returns intact.
+The confirmation email is no longer sent inline — the service now enqueues the
+durable Celery task ``order.confirm_email``. We patch that task's ``.delay`` at
+its import site in ``checkout_service`` so we can assert (a) it is enqueued after a
+successful order creation with the right ``to``, order number and string total,
+and (b) an enqueue failure is swallowed — the order still returns intact.
 """
 
 from decimal import Decimal
@@ -17,20 +18,22 @@ from app.services.checkout_service import CheckoutService
 pytestmark = pytest.mark.asyncio
 
 
-async def test_checkout_triggers_confirmation_with_right_args(
+async def test_checkout_enqueues_confirmation_with_right_args(
     db_session,
     seed_cart,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A successful checkout calls the sender with the order's email + number."""
+    """A successful checkout enqueues the task with email, number + string total."""
     token = await seed_cart(product_id=1, price=Decimal("100.00"), qty=2)
 
     calls: list[dict] = []
 
-    async def _spy(**kwargs) -> None:
+    def _spy_delay(**kwargs) -> None:
         calls.append(kwargs)
 
-    monkeypatch.setattr(checkout_service, "send_order_confirmation", _spy)
+    monkeypatch.setattr(
+        checkout_service.send_order_confirmation_email, "delay", _spy_delay
+    )
 
     service = CheckoutService(db_session)
     order = await service.checkout(
@@ -45,21 +48,23 @@ async def test_checkout_triggers_confirmation_with_right_args(
     assert len(calls) == 1
     assert calls[0]["to"] == "buyer@example.com"
     assert calls[0]["order_number"] == order.number
-    assert calls[0]["total"] == order.total
+    assert calls[0]["total_str"] == str(order.total)
 
 
-async def test_send_failure_does_not_break_the_order(
+async def test_enqueue_failure_does_not_break_the_order(
     db_session,
     seed_cart,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the sender raises, the committed order is still returned (§9.8)."""
+    """If the enqueue raises (e.g. broker down), the committed order still returns."""
     token = await seed_cart(product_id=2, price=Decimal("100.00"), qty=1)
 
-    async def _boom(**_kwargs) -> None:
-        raise RuntimeError("smtp exploded")
+    def _boom(**_kwargs) -> None:
+        raise RuntimeError("broker unreachable")
 
-    monkeypatch.setattr(checkout_service, "send_order_confirmation", _boom)
+    monkeypatch.setattr(
+        checkout_service.send_order_confirmation_email, "delay", _boom
+    )
 
     service = CheckoutService(db_session)
     order = await service.checkout(

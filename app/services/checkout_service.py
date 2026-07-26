@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import normalize_lang
 from app.core.config import settings
-from app.core.email import send_order_confirmation
 from app.models.cart import Cart
 from app.models.order import Order, OrderItem
 from app.models.user import Address
@@ -32,6 +31,7 @@ from app.repositories.user_repo import UserRepository
 from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
 from app.services.payment.payment_service import PaymentService
 from app.services.promo_service import PromoService
+from app.tasks.order_email import send_order_confirmation_email
 
 logger = logging.getLogger(__name__)
 
@@ -448,12 +448,6 @@ class CheckoutService:
                 )
             )
 
-        for line in lines:
-            decremented = await self.repo.decrement_stock(line.product_id, line.qty)
-            if not decremented:
-                await self.session.rollback()
-                raise OutOfStockError(line.product_id)
-
         if cart_id is not None:
             await self.repo.mark_cart_converted(cart_id)
         self.repo.add_status_history(
@@ -468,6 +462,18 @@ class CheckoutService:
             to_status="pending",
             changed_by="system",
         )
+
+        # Decrement stock LAST, immediately before commit, so the product row
+        # lock the conditional UPDATE takes is held for the shortest possible
+        # window (only across the commit, not across the cart/history writes) —
+        # this keeps checkouts of the same product contending minimally during a
+        # flash sale. Rollback on oversell correctly undoes the earlier cart and
+        # status-history writes too.
+        for line in lines:
+            decremented = await self.repo.decrement_stock(line.product_id, line.qty)
+            if not decremented:
+                await self.session.rollback()
+                raise OutOfStockError(line.product_id)
 
         await self.session.commit()
         await self._send_confirmation(order.number, email, order.total)
@@ -771,12 +777,17 @@ class CheckoutService:
         email: str,
         total: Decimal,
     ) -> None:
-        """Fire the post-commit order-confirmation side effect (COD, §9.8).
+        """Dispatch the post-commit order-confirmation side effect (COD, §9.8).
 
-        Delegates to :func:`app.core.email.send_order_confirmation`, whose
-        backend is chosen by ``settings.email_backend``. Kept out of the
-        transaction and defensively wrapped: a delivery failure is logged but
-        never propagated, so mail trouble can't invalidate a committed order.
+        The email is no longer sent inline: this enqueues the durable Celery task
+        :func:`app.tasks.order_email.send_order_confirmation_email` (name
+        ``order.confirm_email``), moving the ~1s SMTP send off the request hot
+        path onto the worker. ``total`` is passed as a string because Celery
+        serializes args as JSON over the broker and ``Decimal`` is not
+        JSON-serializable; the worker reconstructs the ``Decimal``. Kept out of
+        the transaction and defensively wrapped: an enqueue failure (e.g. broker
+        down) is logged but never propagated, so it can't invalidate a committed
+        order.
 
         Args:
             number: The created order number.
@@ -784,14 +795,14 @@ class CheckoutService:
             total: The order grand total (shown in the email body).
         """
         try:
-            await send_order_confirmation(
+            send_order_confirmation_email.delay(
                 to=email,
                 order_number=number,
-                total=total,
+                total_str=str(total),
             )
         except Exception:  # noqa: BLE001 — side effect must not break checkout
             logger.exception(
-                "order %s created for %s: confirmation email failed",
+                "order %s created for %s: confirmation email enqueue failed",
                 number,
                 email,
             )

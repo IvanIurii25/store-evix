@@ -24,6 +24,7 @@ celery_app = Celery(
         "app.tasks.restock",
         "app.tasks.support",
         "app.tasks.es_sync",
+        "app.tasks.order_email",
     ],
 )
 """The shared Celery app. Import this in task modules to register tasks and in
