@@ -59,3 +59,11 @@ class TestHealthCheck:
         # Assert: the probe succeeds and reports the healthy status.
         assert resp.status_code == _HTTP_OK, "health probe returns 200"
         assert resp.json() == {"status": _OK_STATUS}, "healthy status body"
+
+    async def test_health_accepts_head(self, client: AsyncClient) -> None:
+        """A ``HEAD`` probe (uptime-monitor default) yields 200, not 405."""
+        # Act: hit the endpoint with HEAD (Starlette strips the response body).
+        resp = await client.head(f"{_API_V1_PREFIX}/health")
+
+        # Assert: monitors probing with HEAD see a healthy 200.
+        assert resp.status_code == _HTTP_OK, "HEAD health probe returns 200"

@@ -9,9 +9,13 @@ from app.core.db import get_session
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
+@router.api_route("/health", methods=["GET", "HEAD"])
 async def health(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
     """Report service health and verify DB connectivity with ``SELECT 1``.
+
+    Accepts ``HEAD`` as well as ``GET`` so uptime monitors probing with the
+    default ``HEAD`` method get a ``200`` (Starlette strips the body) rather than
+    a ``405``.
 
     Args:
         session: Injected async DB session.
