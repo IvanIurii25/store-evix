@@ -4,14 +4,15 @@ Single-tenant e-commerce core — **storefront + back-office**, feature-complete
 MVP-hardened. FastAPI + async SQLAlchemy 2.0.
 
 Sequential path works end-to-end: catalog (tree / breadcrumbs / cursor listing /
-PDP) → search (Postgres FTS ru/ro) + facets → cart (guest + user, merge) →
+PDP) → search (Elasticsearch, ported ecom-elastic V3, with Postgres FTS fallback —
+ru/ro; see [docs/SEARCH.md](docs/SEARCH.md)) + facets → cart (guest + user, merge) →
 checkout (COD, atomic, race-safe stock) → order (state machine, guest lookup).
 Auth (JWT + argon2 + Redis revocation), thin admin-API, media on MinIO/S3, order
 e-mail, rate limiting. **152 tests.**
 
 **Stack:** Python 3.12 · FastAPI · async SQLAlchemy 2.0 (asyncpg) · Pydantic v2 +
-pydantic-settings · Alembic · orjson · PostgreSQL 16 · Redis 7 · MinIO/S3 ·
-argon2 · uv · Docker. Tooling: ruff (lint + format), pytest (+cov), pre-commit, CI.
+pydantic-settings · Alembic · orjson · PostgreSQL 16 · Redis 7 · Elasticsearch 8 ·
+MinIO/S3 · argon2 · uv · Docker. Tooling: ruff (lint + format), pytest (+cov), pre-commit, CI.
 
 ---
 
