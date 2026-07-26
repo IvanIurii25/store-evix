@@ -87,11 +87,13 @@ def test_build_related_body_structure():
     body = build_related_body(101, "ro", size=40)
 
     mlt = body["query"]["bool"]["must"][0]["more_like_this"]
-    assert mlt["fields"] == ["name_ro^4", "attrs_ro^3", "category_ro^2", "desc_ro^1"]
+    # Plain field names — MLT does not support ^boost (a boosted name matches nothing).
+    assert mlt["fields"] == ["name_ro", "attrs_ro", "category_ro", "desc_ro"]
     assert mlt["like"] == [{"_index": settings.elastic_index, "_id": "101"}]
     # Small-catalogue floors: defaults would return nothing.
     assert mlt["min_term_freq"] == 1
     assert mlt["min_doc_freq"] == 1
+    assert mlt["minimum_should_match"] == "10%"
     assert mlt["include"] is False
     assert body["query"]["bool"]["filter"] == [{"term": {"is_active": True}}]
     assert body["query"]["bool"]["must_not"] == [{"ids": {"values": ["101"]}}]
@@ -103,7 +105,7 @@ def test_build_related_body_uses_request_language():
     """The ``_{lang}`` field variants follow the request language."""
     body = build_related_body(7, "ru", size=10)
     fields = body["query"]["bool"]["must"][0]["more_like_this"]["fields"]
-    assert fields == ["name_ru^4", "attrs_ru^3", "category_ru^2", "desc_ru^1"]
+    assert fields == ["name_ru", "attrs_ru", "category_ru", "desc_ru"]
 
 
 @pytest.mark.asyncio

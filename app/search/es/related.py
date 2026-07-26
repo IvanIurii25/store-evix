@@ -18,15 +18,21 @@ mirroring the search pipeline (ES ranks ids → Postgres is the source of truth)
 from app.core.config import settings
 from app.search.es.client import get_es_client
 
-# MLT field boosts: attribute/name terms are the most discriminating for
-# "similar", category keeps results in the same department (boost own category),
-# description is a low-weight recall net.
-_LIKE_FIELD_BOOSTS: dict[str, int] = {
-    "name": 4,
-    "attrs": 3,
-    "category": 2,
-    "desc": 1,
-}
+# Fields the MLT term comparison spans (per language). Name + attribute values
+# drive most of the similarity; ``category`` keeps results in the same department
+# (own-category products share every path term, so they rank up — the "boost own
+# category" effect) while still allowing cross-category matches; ``desc`` is a
+# recall net. NB: ``more_like_this`` does NOT support per-field ``^boost`` in
+# ``fields`` (unlike ``multi_match``) — a boosted name like ``name_ru^4`` is read
+# as a nonexistent field and silently matches nothing. Relevance is left to
+# MLT's own TF-IDF term weighting.
+_LIKE_FIELDS: tuple[str, ...] = ("name", "attrs", "category", "desc")
+
+# Fraction of the seed's selected terms a candidate must share. ES defaults to
+# 30%, which returns nothing on this catalogue (products rarely share a third of
+# each other's terms); 10% gives ample recall while MLT's score still floats the
+# genuinely-similar items to the top (and we cap to ``limit`` by score anyway).
+_MINIMUM_SHOULD_MATCH: str = "10%"
 
 
 def build_related_body(product_id: int, lang: str, *, size: int) -> dict:
@@ -45,11 +51,9 @@ def build_related_body(product_id: int, lang: str, *, size: int) -> dict:
         The MLT term-frequency floors are relaxed to ``1`` on purpose: the
         catalogue is small (hundreds of docs), and ES's defaults
         (``min_term_freq=2``, ``min_doc_freq=5``) would discard most terms and
-        return nothing. ``minimum_should_match`` keeps precision up.
+        return nothing. See ``_MINIMUM_SHOULD_MATCH`` for the recall floor.
     """
-    like_fields = [
-        f"{field}_{lang}^{boost}" for field, boost in _LIKE_FIELD_BOOSTS.items()
-    ]
+    like_fields = [f"{field}_{lang}" for field in _LIKE_FIELDS]
     return {
         "query": {
             "bool": {
@@ -66,7 +70,7 @@ def build_related_body(product_id: int, lang: str, *, size: int) -> dict:
                             "min_term_freq": 1,
                             "min_doc_freq": 1,
                             "max_query_terms": 25,
-                            "minimum_should_match": "30%",
+                            "minimum_should_match": _MINIMUM_SHOULD_MATCH,
                             "include": False,  # never return the seed itself
                         }
                     }
