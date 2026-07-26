@@ -110,6 +110,11 @@ class Product(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Manual curation flag for the storefront "featured" rail (homepage).
     is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # True for variable products (WooCommerce-style): price/stock are sourced from
+    # ``product_variant`` rows; the ``price``/``old_price``/``qty`` columns above
+    # become a denormalized cache (min price / aggregate) maintained on write.
+    # Simple products keep this False and behave exactly as before.
+    has_variants: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class ProductTranslation(Base):
@@ -216,6 +221,79 @@ class ProductAttribute(Base):
     )
 
 
+class ProductVariant(Base, TimestampMixin):
+    """One purchasable variation of a variable product (WooCommerce-style).
+
+    A variant is an explicit combination of attribute values (linked via
+    ``product_variant_value``) carrying its own price/stock/SKU. For variable
+    products the buy-time price and the race-safe stock authority live **here**,
+    not on ``product``. Variants are never translated — their identity is the
+    set of (already-translated) attribute values.
+    """
+
+    __tablename__ = "product_variant"
+    __table_args__ = (
+        # NULLs are distinct in Postgres, so variants without a SKU never collide.
+        UniqueConstraint("code", name="uq_product_variant_code"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    product_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("product.id"),
+        nullable=False,
+        index=True,
+    )
+    # Per-variant SKU (source article number); unique when present.
+    code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ProductVariantValue(Base):
+    """Which attribute value defines a variant — one row per variation axis."""
+
+    __tablename__ = "product_variant_value"
+    __table_args__ = (PrimaryKeyConstraint("variant_id", "value_id"),)
+
+    variant_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("product_variant.id"),
+        nullable=False,
+    )
+    value_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("attribute_value.id"),
+        nullable=False,
+    )
+
+
+class ProductVariationAttribute(Base):
+    """Which attributes are variation-defining (selectors) for a product.
+
+    Separates selector attributes — rendered as storefront option pickers — from
+    the informational ``product_attribute`` links shown as flat characteristics.
+    """
+
+    __tablename__ = "product_variation_attribute"
+    __table_args__ = (PrimaryKeyConstraint("product_id", "attribute_id"),)
+
+    product_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("product.id"),
+        nullable=False,
+    )
+    attribute_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("attribute.id"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class Media(Base):
     """Product media. v1: a single ``url`` per row, no derivatives (§2.1)."""
 
@@ -229,6 +307,12 @@ class Media(Base):
         BigInteger,
         ForeignKey("product.id"),
         nullable=False,
+    )
+    # Set when this image belongs to a specific variant; NULL = shared gallery.
+    variant_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("product_variant.id"),
+        nullable=True,
     )
     url: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False, default="image")
@@ -261,6 +345,9 @@ class ProductCard(Base):
     slug: Mapped[str] = mapped_column(Text, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # For variable products: max variant price when it differs from ``price``
+    # (which holds the min). NULL for simple / uniform-price products → no range.
+    price_max: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     in_stock: Mapped[bool] = mapped_column(Boolean, nullable=False)
     main_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     badge: Mapped[str | None] = mapped_column(String, nullable=True)
