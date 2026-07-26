@@ -12,7 +12,7 @@ so an unknown ``lang`` is rejected at the edge, not by a DB CheckConstraint.
 import re
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.catalog import ALLOWED_LANGS
 
@@ -285,6 +285,7 @@ class ProductCreate(BaseModel):
     qty: int = Field(default=0, ge=0)
     is_active: bool = False
     is_featured: bool = False
+    has_variants: bool = False
     translations: list[ProductTranslationIn] = Field(default_factory=list)
 
 
@@ -302,6 +303,7 @@ class ProductUpdate(BaseModel):
     qty: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
     is_featured: bool | None = None
+    has_variants: bool | None = None
 
 
 class ProductTranslationOut(BaseModel):
@@ -324,6 +326,8 @@ class MediaAdminOut(BaseModel):
 
     id: int
     product_id: int
+    # Set when the image is bound to a specific variant; NULL = shared gallery.
+    variant_id: int | None = None
     url: str
     kind: str
     position: int
@@ -358,15 +362,104 @@ class ProductOut(BaseModel):
     qty: int
     is_active: bool
     is_featured: bool = False
+    has_variants: bool = False
     translations: list[ProductTranslationOut] = Field(default_factory=list)
     media: list[MediaAdminOut] = Field(default_factory=list)
     value_ids: list[int] = Field(default_factory=list)
+    # Ordered variation-selector attribute ids (empty for simple products).
+    variation_attribute_ids: list[int] = Field(default_factory=list)
+    variants: list["VariantAdminOut"] = Field(default_factory=list)
 
 
 class ProductAttributeSetRequest(BaseModel):
     """Replace a product's attribute-value links with the given set."""
 
     value_ids: list[int] = Field(default_factory=list)
+
+
+class VariantAdminOut(BaseModel):
+    """A product variant as returned to the back-office."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    code: str | None = None
+    price: Decimal
+    old_price: Decimal | None = None
+    qty: int
+    position: int
+    is_active: bool
+    # The attribute values (one per variation attribute) that define this variant.
+    value_ids: list[int] = Field(default_factory=list)
+    # A bound variant image's media id, if any (NULL when none is attached).
+    image_media_id: int | None = None
+
+
+class VariantListOut(BaseModel):
+    """Envelope for a product's variant list."""
+
+    data: list[VariantAdminOut] = Field(default_factory=list)
+
+
+class VariationAttributesRequest(BaseModel):
+    """Replace a product's variation-selector attributes (ordered)."""
+
+    attribute_ids: list[int] = Field(default_factory=list)
+
+
+class VariantCreate(BaseModel):
+    """Create one variant — a full combination of attribute values + price/stock."""
+
+    value_ids: list[int] = Field(min_length=1)
+    code: str | None = Field(default=None, max_length=_CODE_MAX)
+    price: Decimal = Field(ge=0)
+    old_price: Decimal | None = Field(default=None, ge=0)
+    qty: int = Field(default=0, ge=0)
+    is_active: bool = True
+
+
+class VariantUpdate(BaseModel):
+    """Partial update of a variant's price / stock / order / active flag.
+
+    Identity (the value combination) is immutable — changing it is a delete +
+    create. At least one mutable field must be supplied.
+    """
+
+    code: str | None = Field(default=None, max_length=_CODE_MAX)
+    price: Decimal | None = Field(default=None, ge=0)
+    old_price: Decimal | None = Field(default=None, ge=0)
+    qty: int | None = Field(default=None, ge=0)
+    position: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _require_one_field(self) -> "VariantUpdate":
+        """Reject an empty patch — at least one mutable field is required."""
+        if not self.model_fields_set:
+            raise ValueError("At least one field is required")
+        return self
+
+
+class VariantGenerateResult(BaseModel):
+    """Outcome of bulk variant generation: what was created and what was skipped."""
+
+    created: list[VariantAdminOut] = Field(default_factory=list)
+    skipped: int = Field(
+        default=0,
+        ge=0,
+        description="Combinations skipped because a matching variant already existed.",
+    )
+
+
+class MediaVariantBindRequest(BaseModel):
+    """Bind a product's media row to a variant (or unbind when ``None``)."""
+
+    variant_id: int | None = None
+
+
+# ProductOut references VariantAdminOut as a forward ref (defined above); resolve it.
+ProductOut.model_rebuild()
 
 
 class ProductSearchItem(BaseModel):

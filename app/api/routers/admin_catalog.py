@@ -40,6 +40,7 @@ from app.schemas.admin_catalog import (
     MediaAdminOut,
     MediaListOut,
     MediaReorderRequest,
+    MediaVariantBindRequest,
     ProductAttributeSetRequest,
     ProductCreate,
     ProductOut,
@@ -48,6 +49,12 @@ from app.schemas.admin_catalog import (
     ProductTranslationIn,
     ProductTranslationOut,
     ProductUpdate,
+    VariantAdminOut,
+    VariantCreate,
+    VariantGenerateResult,
+    VariantListOut,
+    VariantUpdate,
+    VariationAttributesRequest,
 )
 from app.schemas.restock import DemandItem, RestockWaitersOut
 from app.services.admin_catalog_service import (
@@ -125,6 +132,10 @@ async def _build_product_out(
     translations = await service.get_product_translations(product.id)
     media = await service.get_product_media(product.id)
     value_ids = await service.get_product_value_ids(product.id)
+    variation_attribute_ids = await service.get_product_variation_attribute_ids(
+        product.id
+    )
+    variants = await _build_variants_out(service, product.id)
     return ProductOut(
         id=product.id,
         category_id=product.category_id,
@@ -134,10 +145,38 @@ async def _build_product_out(
         qty=product.qty,
         is_active=product.is_active,
         is_featured=product.is_featured,
+        has_variants=product.has_variants,
         translations=[ProductTranslationOut.model_validate(tr) for tr in translations],
         media=[MediaAdminOut.model_validate(item) for item in media],
         value_ids=value_ids,
+        variation_attribute_ids=variation_attribute_ids,
+        variants=variants,
     )
+
+
+async def _build_variants_out(
+    service: AdminCatalogService, product_id: int
+) -> list[VariantAdminOut]:
+    """Assemble a product's variants with their value ids + bound image id."""
+    variants = await service.get_product_variants(product_id)
+    ids = [v.id for v in variants]
+    value_map = await service.get_variant_value_ids_map(ids)
+    image_map = await service.get_variant_image_ids(ids)
+    return [
+        VariantAdminOut(
+            id=v.id,
+            product_id=v.product_id,
+            code=v.code,
+            price=v.price,
+            old_price=v.old_price,
+            qty=v.qty,
+            position=v.position,
+            is_active=v.is_active,
+            value_ids=value_map.get(v.id, []),
+            image_media_id=image_map.get(v.id),
+        )
+        for v in variants
+    ]
 
 
 async def _build_attribute_out(
@@ -545,6 +584,154 @@ async def delete_product_media(
         _raise_http(exc)
 
 
+@router.put(
+    "/products/{product_id}/media/{media_id}/variant",
+    response_model=MediaAdminOut,
+)
+async def bind_media_to_variant(
+    product_id: int,
+    media_id: int,
+    payload: MediaVariantBindRequest,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> MediaAdminOut:
+    """Bind one image to a variant (or unbind to the shared gallery)."""
+    try:
+        media = await service.bind_media_to_variant(
+            product_id, media_id, payload.variant_id
+        )
+    except AdminNotFoundError as exc:
+        _raise_http(exc)
+    return MediaAdminOut.model_validate(media)
+
+
+# --------------------------------------------------------------------------- #
+# Variants (variable products)
+# --------------------------------------------------------------------------- #
+async def _variant_out(
+    service: AdminCatalogService, variant: object
+) -> VariantAdminOut:
+    """Build a single variant admin DTO (value ids + bound image)."""
+    value_map = await service.get_variant_value_ids_map([variant.id])
+    image_map = await service.get_variant_image_ids([variant.id])
+    return VariantAdminOut(
+        id=variant.id,
+        product_id=variant.product_id,
+        code=variant.code,
+        price=variant.price,
+        old_price=variant.old_price,
+        qty=variant.qty,
+        position=variant.position,
+        is_active=variant.is_active,
+        value_ids=value_map.get(variant.id, []),
+        image_media_id=image_map.get(variant.id),
+    )
+
+
+@router.get("/products/{product_id}/variants", response_model=VariantListOut)
+async def list_product_variants(
+    product_id: int,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> VariantListOut:
+    """List a product's variants (including inactive) for the back-office."""
+    return VariantListOut(data=await _build_variants_out(service, product_id))
+
+
+@router.put(
+    "/products/{product_id}/variation-attributes",
+    response_model=ProductOut,
+)
+async def set_variation_attributes(
+    product_id: int,
+    payload: VariationAttributesRequest,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> ProductOut:
+    """Set (ordered) which attributes are the product's variation selectors."""
+    try:
+        await service.set_variation_attributes(product_id, payload.attribute_ids)
+        product = await service._get_product(product_id)  # noqa: SLF001
+    except (AdminNotFoundError, AdminValidationError) as exc:
+        _raise_http(exc)
+    return await _build_product_out(service, product)
+
+
+@router.post(
+    "/products/{product_id}/variants",
+    response_model=VariantAdminOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_variant(
+    product_id: int,
+    payload: VariantCreate,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> VariantAdminOut:
+    """Create one variant (a full combination of variation-attribute values)."""
+    try:
+        variant = await service.create_variant(product_id, payload)
+    except (AdminNotFoundError, AdminValidationError, AdminConflictError) as exc:
+        _raise_http(exc)
+    return await _variant_out(service, variant)
+
+
+@router.post(
+    "/products/{product_id}/variants/generate",
+    response_model=VariantGenerateResult,
+    status_code=status.HTTP_201_CREATED,
+)
+async def generate_product_variants(
+    product_id: int,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> VariantGenerateResult:
+    """Create the missing cartesian combinations from the assigned values.
+
+    Returns the variants that were created plus a count of the combinations that
+    already existed and were skipped (the operation is idempotent).
+    """
+    try:
+        created, skipped = await service.generate_variants(product_id)
+    except (AdminNotFoundError, AdminValidationError) as exc:
+        _raise_http(exc)
+    return VariantGenerateResult(
+        created=[await _variant_out(service, variant) for variant in created],
+        skipped=skipped,
+    )
+
+
+@router.patch("/variants/{variant_id}", response_model=VariantAdminOut)
+async def update_variant(
+    variant_id: int,
+    payload: VariantUpdate,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> VariantAdminOut:
+    """Update a variant's price / stock / order / active flag."""
+    try:
+        variant = await service.update_variant(variant_id, payload)
+    except (AdminNotFoundError, AdminConflictError) as exc:
+        _raise_http(exc)
+    return await _variant_out(service, variant)
+
+
+@router.delete(
+    "/variants/{variant_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_variant(
+    variant_id: int,
+    _staff: AppUser = Depends(current_staff),
+    service: AdminCatalogService = Depends(get_admin_catalog_service),
+) -> None:
+    """Delete a variant (its value links + image bindings)."""
+    try:
+        await service.delete_variant(variant_id)
+    except AdminNotFoundError as exc:
+        _raise_http(exc)
+
+
 # --------------------------------------------------------------------------- #
 # Attributes + values
 # --------------------------------------------------------------------------- #
@@ -555,9 +742,7 @@ async def list_attributes(
 ) -> list[AttributeOut]:
     """Return every attribute with its translations and values (picker source)."""
     attributes = await service.list_attributes()
-    return [
-        await _build_attribute_out(service, attribute) for attribute in attributes
-    ]
+    return [await _build_attribute_out(service, attribute) for attribute in attributes]
 
 
 @router.post(

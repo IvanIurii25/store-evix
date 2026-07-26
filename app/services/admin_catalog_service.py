@@ -9,10 +9,11 @@ one place (§10). No HTTP knowledge: the router maps the raised exceptions.
 """
 
 import asyncio
+import itertools
 import logging
 
 from fastapi import UploadFile
-from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select
+from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +32,9 @@ from app.models.catalog import (
     Product,
     ProductAttribute,
     ProductTranslation,
+    ProductVariant,
+    ProductVariantValue,
+    ProductVariationAttribute,
 )
 from app.schemas.admin_catalog import (
     AttributeCreate,
@@ -46,6 +50,8 @@ from app.schemas.admin_catalog import (
     ProductCreate,
     ProductTranslationIn,
     ProductUpdate,
+    VariantCreate,
+    VariantUpdate,
 )
 from app.services.catalog_service import CatalogService
 
@@ -428,6 +434,7 @@ class AdminCatalogService:
             qty=payload.qty,
             is_active=payload.is_active,
             is_featured=payload.is_featured,
+            has_variants=payload.has_variants,
         )
         self.session.add(product)
         await self.session.flush()
@@ -667,6 +674,412 @@ class AdminCatalogService:
         await self.session.commit()
         self._enqueue_es_reindex([product_id])
         return unique_ids
+
+    # ------------------------------------------------------------------ #
+    # Variants (variable products)
+    # ------------------------------------------------------------------ #
+    async def get_product_variation_attribute_ids(self, product_id: int) -> list[int]:
+        """Return a product's variation-selector attribute ids, in selector order."""
+        stmt = (
+            select(ProductVariationAttribute.attribute_id)
+            .where(ProductVariationAttribute.product_id == product_id)
+            .order_by(ProductVariationAttribute.position)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_product_variants(self, product_id: int) -> list[ProductVariant]:
+        """Return ALL of a product's variants (incl. inactive), in display order."""
+        stmt = (
+            select(ProductVariant)
+            .where(ProductVariant.product_id == product_id)
+            .order_by(ProductVariant.position, ProductVariant.id)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_variant_value_ids_map(
+        self, variant_ids: list[int]
+    ) -> dict[int, list[int]]:
+        """Return ``{variant_id: [value_id, ...]}`` for the given variants."""
+        if not variant_ids:
+            return {}
+        stmt = (
+            select(ProductVariantValue.variant_id, ProductVariantValue.value_id)
+            .where(ProductVariantValue.variant_id.in_(variant_ids))
+            .order_by(ProductVariantValue.variant_id, ProductVariantValue.value_id)
+        )
+        out: dict[int, list[int]] = {}
+        for variant_id, value_id in (await self.session.execute(stmt)).all():
+            out.setdefault(variant_id, []).append(value_id)
+        return out
+
+    async def get_variant_image_ids(self, variant_ids: list[int]) -> dict[int, int]:
+        """Return ``{variant_id: media_id}`` — the lowest-position bound image."""
+        if not variant_ids:
+            return {}
+        stmt = (
+            select(Media.variant_id, Media.id)
+            .where(Media.variant_id.in_(variant_ids))
+            .order_by(Media.variant_id, Media.position, Media.id)
+        )
+        out: dict[int, int] = {}
+        for variant_id, media_id in (await self.session.execute(stmt)).all():
+            if variant_id not in out:  # first seen = lowest position
+                out[variant_id] = media_id
+        return out
+
+    async def set_variation_attributes(
+        self, product_id: int, attribute_ids: list[int]
+    ) -> list[int]:
+        """Replace a product's variation-selector attributes (ordered).
+
+        A non-empty list marks the product variable; an empty list clears it and
+        turns ``has_variants`` off — allowed only when no variants remain.
+
+        Args:
+            product_id: Owning product.
+            attribute_ids: Ordered attribute ids (duplicates ignored).
+
+        Returns:
+            list[int]: The stored attribute ids after the write.
+
+        Raises:
+            AdminNotFoundError: If the product or any attribute id is missing.
+            AdminValidationError: If clearing while variants still exist.
+        """
+        product = await self._get_product(product_id)
+        unique = list(dict.fromkeys(attribute_ids))
+        if unique:
+            found = (
+                (
+                    await self.session.execute(
+                        select(Attribute.id).where(Attribute.id.in_(unique))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            missing = set(unique) - set(found)
+            if missing:
+                raise AdminNotFoundError(f"Attributes not found: {sorted(missing)}")
+        else:
+            count = await self.session.scalar(
+                select(func.count())
+                .select_from(ProductVariant)
+                .where(ProductVariant.product_id == product_id)
+            )
+            if count:
+                raise AdminValidationError(
+                    "Delete variants before clearing variation attributes"
+                )
+        await self.session.execute(
+            delete(ProductVariationAttribute).where(
+                ProductVariationAttribute.product_id == product_id
+            )
+        )
+        for position, attribute_id in enumerate(unique):
+            self.session.add(
+                ProductVariationAttribute(
+                    product_id=product_id,
+                    attribute_id=attribute_id,
+                    position=position,
+                )
+            )
+        product.has_variants = bool(unique)
+        await self.session.flush()
+        await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        self._enqueue_es_reindex([product_id])
+        return unique
+
+    async def create_variant(
+        self, product_id: int, payload: VariantCreate
+    ) -> ProductVariant:
+        """Create one variant — a full combination of the variation attributes.
+
+        Args:
+            product_id: Owning product.
+            payload: Value ids (one per variation attribute) + price/stock/code.
+
+        Returns:
+            ProductVariant: The created variant.
+
+        Raises:
+            AdminNotFoundError: If the product or a value id is missing.
+            AdminValidationError: If no variation attributes are set, or the value
+                set is not exactly one value per variation attribute.
+            AdminConflictError: If the code, or the exact combination, already exists.
+        """
+        product = await self._get_product(product_id)
+        variation_attr_ids = await self.get_product_variation_attribute_ids(product_id)
+        if not variation_attr_ids:
+            raise AdminValidationError(
+                "Set variation attributes before adding variants"
+            )
+        unique_values = list(dict.fromkeys(payload.value_ids))
+        rows = (
+            await self.session.execute(
+                select(AttributeValue.id, AttributeValue.attribute_id).where(
+                    AttributeValue.id.in_(unique_values)
+                )
+            )
+        ).all()
+        found = {vid: aid for vid, aid in rows}
+        missing = set(unique_values) - set(found)
+        if missing:
+            raise AdminNotFoundError(f"Attribute values not found: {sorted(missing)}")
+        attr_ids = [found[v] for v in unique_values]
+        if sorted(attr_ids) != sorted(variation_attr_ids):
+            raise AdminValidationError(
+                "Provide exactly one value per variation attribute"
+            )
+        await self._assert_variant_code_free(payload.code)
+        if await self._combo_exists(product_id, set(unique_values)):
+            raise AdminConflictError("A variant with this combination already exists")
+
+        position = await self.session.scalar(
+            select(func.coalesce(func.max(ProductVariant.position), -1) + 1).where(
+                ProductVariant.product_id == product_id
+            )
+        )
+        variant = ProductVariant(
+            product_id=product_id,
+            code=payload.code,
+            price=payload.price,
+            old_price=payload.old_price,
+            qty=payload.qty,
+            is_active=payload.is_active,
+            position=position or 0,
+        )
+        self.session.add(variant)
+        await self.session.flush()
+        for value_id in unique_values:
+            self.session.add(
+                ProductVariantValue(variant_id=variant.id, value_id=value_id)
+            )
+        if not product.has_variants:
+            product.has_variants = True
+        await self.session.flush()
+        await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        self._enqueue_es_reindex([product_id])
+        await self.session.refresh(variant)
+        return variant
+
+    async def generate_variants(
+        self, product_id: int
+    ) -> tuple[list[ProductVariant], int]:
+        """Create the missing cartesian combinations of the variation attributes.
+
+        Combines the product's **assigned** attribute values (``product_attribute``)
+        for each variation attribute; existing combinations are left intact and only
+        the missing ones are created (at the product's price, qty 0, active). The
+        operation is idempotent — re-running it only fills gaps.
+
+        Args:
+            product_id: Owning product.
+
+        Returns:
+            tuple[list[ProductVariant], int]: The newly created variants (possibly
+            empty) and the number of combinations skipped because a matching variant
+            already existed.
+
+        Raises:
+            AdminNotFoundError: If the product does not exist.
+            AdminValidationError: If no variation attributes are set, or a variation
+                attribute has no assigned values to combine.
+        """
+        product = await self._get_product(product_id)
+        variation_attr_ids = await self.get_product_variation_attribute_ids(product_id)
+        if not variation_attr_ids:
+            raise AdminValidationError(
+                "Set variation attributes before generating variants"
+            )
+        rows = (
+            await self.session.execute(
+                select(AttributeValue.attribute_id, AttributeValue.id)
+                .join(
+                    ProductAttribute,
+                    ProductAttribute.value_id == AttributeValue.id,
+                )
+                .where(
+                    ProductAttribute.product_id == product_id,
+                    AttributeValue.attribute_id.in_(variation_attr_ids),
+                )
+                .order_by(AttributeValue.attribute_id, AttributeValue.id)
+            )
+        ).all()
+        by_attr: dict[int, list[int]] = {}
+        for attribute_id, value_id in rows:
+            by_attr.setdefault(attribute_id, []).append(value_id)
+        missing = [a for a in variation_attr_ids if a not in by_attr]
+        if missing:
+            raise AdminValidationError(
+                "Assign values for every variation attribute before generating"
+            )
+
+        existing = await self.get_product_variants(product_id)
+        existing_map = await self.get_variant_value_ids_map([v.id for v in existing])
+        existing_combos = {frozenset(vals) for vals in existing_map.values()}
+        position = (
+            await self.session.scalar(
+                select(func.coalesce(func.max(ProductVariant.position), -1) + 1).where(
+                    ProductVariant.product_id == product_id
+                )
+            )
+            or 0
+        )
+
+        ordered_values = [by_attr[a] for a in variation_attr_ids]
+        created: list[ProductVariant] = []
+        skipped = 0
+        for combo in itertools.product(*ordered_values):
+            combo_set = frozenset(combo)
+            if combo_set in existing_combos:
+                skipped += 1
+                continue
+            variant = ProductVariant(
+                product_id=product_id,
+                code=None,
+                price=product.price,
+                old_price=None,
+                qty=0,
+                is_active=True,
+                position=position,
+            )
+            self.session.add(variant)
+            await self.session.flush()
+            for value_id in combo:
+                self.session.add(
+                    ProductVariantValue(variant_id=variant.id, value_id=value_id)
+                )
+            created.append(variant)
+            existing_combos.add(combo_set)
+            position += 1
+
+        if created and not product.has_variants:
+            product.has_variants = True
+        await self.session.flush()
+        await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        self._enqueue_es_reindex([product_id])
+        for variant in created:
+            await self.session.refresh(variant)
+        return created, skipped
+
+    async def update_variant(
+        self, variant_id: int, payload: VariantUpdate
+    ) -> ProductVariant:
+        """Partially update a variant; rebuild its product's card.
+
+        Args:
+            variant_id: Variant to update.
+            payload: Fields to change (unset fields are left as-is).
+
+        Returns:
+            ProductVariant: The updated variant.
+
+        Raises:
+            AdminNotFoundError: If the variant does not exist.
+            AdminConflictError: If a new ``code`` collides with another variant.
+        """
+        variant = await self._get_variant(variant_id)
+        data = payload.model_dump(exclude_unset=True)
+        if "code" in data and data["code"] and data["code"] != variant.code:
+            await self._assert_variant_code_free(data["code"])
+        for field, value in data.items():
+            setattr(variant, field, value)
+        await self.session.flush()
+        await self.catalog.rebuild_cards([variant.product_id])
+        await self.session.commit()
+        self._enqueue_es_reindex([variant.product_id])
+        await self.session.refresh(variant)
+        return variant
+
+    async def delete_variant(self, variant_id: int) -> None:
+        """Delete a variant (its value links + image bindings); rebuild the card.
+
+        Args:
+            variant_id: Variant to remove.
+
+        Raises:
+            AdminNotFoundError: If the variant does not exist.
+        """
+        variant = await self._get_variant(variant_id)
+        product_id = variant.product_id
+        await self.session.execute(
+            update(Media).where(Media.variant_id == variant_id).values(variant_id=None)
+        )
+        await self.session.execute(
+            delete(ProductVariantValue).where(
+                ProductVariantValue.variant_id == variant_id
+            )
+        )
+        await self.session.execute(
+            delete(ProductVariant).where(ProductVariant.id == variant_id)
+        )
+        await self.session.flush()
+        await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        self._enqueue_es_reindex([product_id])
+
+    async def bind_media_to_variant(
+        self, product_id: int, media_id: int, variant_id: int | None
+    ) -> Media:
+        """Bind (or unbind, when ``variant_id`` is None) a media row to a variant.
+
+        Args:
+            product_id: Owning product (both media and variant must belong to it).
+            media_id: The media row to (re)bind.
+            variant_id: Target variant id, or ``None`` to move it to the shared
+                gallery.
+
+        Returns:
+            Media: The updated media row.
+
+        Raises:
+            AdminNotFoundError: If the media or variant is missing or not on the
+                product.
+        """
+        await self._get_product(product_id)
+        media = await self.session.get(Media, media_id)
+        if media is None or media.product_id != product_id:
+            raise AdminNotFoundError(f"Media {media_id} not found")
+        if variant_id is not None:
+            variant = await self.session.get(ProductVariant, variant_id)
+            if variant is None or variant.product_id != product_id:
+                raise AdminNotFoundError(f"Variant {variant_id} not found")
+        media.variant_id = variant_id
+        await self.session.flush()
+        await self.catalog.rebuild_cards([product_id])
+        await self.session.commit()
+        self._enqueue_es_reindex([product_id])
+        await self.session.refresh(media)
+        return media
+
+    async def _get_variant(self, variant_id: int) -> ProductVariant:
+        """Load a variant or raise :class:`AdminNotFoundError`."""
+        variant = await self.session.get(ProductVariant, variant_id)
+        if variant is None:
+            raise AdminNotFoundError(f"Variant {variant_id} not found")
+        return variant
+
+    async def _assert_variant_code_free(self, code: str | None) -> None:
+        """Raise :class:`AdminConflictError` if ``code`` is already taken."""
+        if not code:
+            return
+        exists = await self.session.scalar(
+            select(ProductVariant.id).where(ProductVariant.code == code)
+        )
+        if exists is not None:
+            raise AdminConflictError(f"Variant code '{code}' already exists")
+
+    async def _combo_exists(self, product_id: int, value_ids: set[int]) -> bool:
+        """Return whether a variant with the exact value set already exists."""
+        existing = await self.get_product_variants(product_id)
+        if not existing:
+            return False
+        value_map = await self.get_variant_value_ids_map([v.id for v in existing])
+        return any(set(vals) == value_ids for vals in value_map.values())
 
     async def add_product_media(
         self,
