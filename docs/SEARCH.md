@@ -263,6 +263,8 @@ the first time). See `проекты/evix/flystore/prod-deploy-progress.md` in t
 - `tests/search/test_es_query.py` — pure unit tests for `INDEX_BODY` (analyzers/subfields
   present) and `build_search_body` (tier structure, fuzzy single-token guard, exact mode,
   suggest, min_score). No ES/DB needed.
-- `tests/search/integration/…` — the Postgres FTS path (endpoint contract, facets).
+- `tests/search/integration/technical/` — the Postgres FTS path: `test_search.py`,
+  `test_search_service.py`, `test_search_repo.py`, `test_search_router.py` (endpoint
+  contract, ranking, facets).
 - Live-ES behaviour (transliteration, typo, diacritic, ranking) is verified against prod
   after `reindex_all` (see the plan's regression checklist).
