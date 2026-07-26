@@ -23,25 +23,41 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_percent_discount(db_session, add_promo) -> None:
-    """Percent code: discount = subtotal * value / 100 (2 decimals)."""
+    """Percent code: discount = subtotal * value / 100 (whole MDL)."""
     await add_promo("P10", discount_type="percent", discount_value=Decimal("10"))
     service = PromoService(db_session)
 
     promo, discount = await service.validate_and_compute("P10", Decimal("250.00"))
 
     assert promo.code == "P10"
-    assert discount == Decimal("25.00")
+    assert discount == Decimal("25")
 
 
 async def test_percent_discount_rounds_half_up(db_session, add_promo) -> None:
-    """Percent rounding is half-up to 2 decimals."""
-    await add_promo("P15", discount_type="percent", discount_value=Decimal("15"))
+    """Percent rounding is half-up to whole MDL (BUG-02: display == charged).
+
+    10% of 249 is 24.90 raw; the store prices in whole MDL, so the discount is
+    quantized to a whole number (25), keeping the shown discount equal to the
+    charged one instead of storing 24.90 while the front rounds it to 25.
+    """
+    await add_promo("P10", discount_type="percent", discount_value=Decimal("10"))
     service = PromoService(db_session)
 
-    _promo, discount = await service.validate_and_compute("P15", Decimal("33.33"))
+    _promo, discount = await service.validate_and_compute("P10", Decimal("249.00"))
 
-    # 33.33 * 15 / 100 = 4.9995 → 5.00
-    assert discount == Decimal("5.00")
+    # 249 * 10 / 100 = 24.90 → 25 (whole MDL, half-up)
+    assert discount == Decimal("25")
+
+
+async def test_percent_discount_rounds_half_up_down(db_session, add_promo) -> None:
+    """A raw discount below the half-point rounds down to whole MDL."""
+    await add_promo("P10", discount_type="percent", discount_value=Decimal("10"))
+    service = PromoService(db_session)
+
+    _promo, discount = await service.validate_and_compute("P10", Decimal("242.00"))
+
+    # 242 * 10 / 100 = 24.20 → 24 (whole MDL, half-up)
+    assert discount == Decimal("24")
 
 
 async def test_fixed_discount(db_session, add_promo) -> None:

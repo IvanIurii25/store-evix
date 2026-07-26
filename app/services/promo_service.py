@@ -12,8 +12,10 @@ Feature A1 (§2.5). Two concerns share one service bound to a session:
 Discount rules (§2.5):
 
 * ``percent`` → ``subtotal * value / 100``; ``fixed`` → ``min(value, subtotal)``.
-* Result is quantized to 2 decimals (``ROUND_HALF_UP``) and never exceeds the
-  subtotal, so ``total`` can never go negative from a discount.
+* Result is quantized to whole MDL (0 decimals, ``ROUND_HALF_UP``) and never
+  exceeds the subtotal, so ``total`` can never go negative from a discount. The
+  store prices in whole MDL, so the discount is rounded to whole MDL too — the
+  displayed discount then equals the charged discount (BUG-02).
 
 The service owns no HTTP knowledge and no SQL (that is :class:`PromoRepository`).
 """
@@ -27,8 +29,9 @@ from app.models.promo import DISCOUNT_TYPES, PromoCode
 from app.repositories.promo_repo import PromoRepository
 from app.schemas.admin_promo import PromoCreate, PromoUpdate
 
-# Money precision: two decimals, half-up rounding (§2.6 MDL).
-_CENTS: Decimal = Decimal("0.01")
+# Money precision: whole MDL, half-up rounding (§2.6). The store prices in whole
+# MDL, so discounts quantize to whole MDL as well (BUG-02: display == charged).
+_UNIT: Decimal = Decimal("1")
 _ZERO: Decimal = Decimal("0")
 _HUNDRED: Decimal = Decimal("100")
 
@@ -171,21 +174,23 @@ class PromoService:
         """Compute the discount for a promo against a subtotal (§2.5).
 
         ``percent`` → ``subtotal * value / 100``; ``fixed`` → ``value``. The
-        result is quantized to 2 decimals and clamped to ``[0, subtotal]`` so the
-        order total can never be dragged negative.
+        result is quantized to whole MDL (0 decimals, ``ROUND_HALF_UP``) and
+        clamped to ``[0, subtotal]`` so the order total can never be dragged
+        negative. Whole-MDL rounding keeps the displayed discount equal to the
+        charged discount, consistent with the store's whole-MDL prices (BUG-02).
 
         Args:
             promo: The validated promo row.
             subtotal: The cart subtotal.
 
         Returns:
-            Decimal: The discount amount (0..subtotal, 2 decimals).
+            Decimal: The discount amount (0..subtotal, whole MDL).
         """
         if promo.discount_type == _PERCENT:
             raw = subtotal * promo.discount_value / _HUNDRED
         else:
             raw = promo.discount_value
-        discount = raw.quantize(_CENTS, rounding=ROUND_HALF_UP)
+        discount = raw.quantize(_UNIT, rounding=ROUND_HALF_UP)
         if discount < _ZERO:
             return _ZERO
         return min(discount, subtotal)

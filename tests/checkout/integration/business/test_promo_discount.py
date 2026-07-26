@@ -71,6 +71,40 @@ async def test_quote_percent_discount(client, add_product, add_promo) -> None:
     assert Decimal(body["total"]) == Decimal("180.00")
 
 
+async def test_quote_percent_discount_rounds_to_whole_mdl(
+    client, add_product, add_promo
+) -> None:
+    """BUG-02: a fractional percent discount is quantized to whole MDL so the
+    stored discount / total match what the whole-MDL front shows.
+
+    10% of 249 is 24.90 raw; with courier (+50) the shown discount was 25 while
+    the back stored 24.90 / total 274.10. Whole-MDL rounding makes both 25 / 274.
+    """
+    await _seed_line(client, add_product, product_id=1, price="249.00", qty=1)
+    await add_promo("SAVE10", discount_type="percent", discount_value=Decimal("10"))
+
+    resp = await client.post(
+        _QUOTE,
+        json={
+            "delivery_type": "courier",
+            "promo_code": "SAVE10",
+            "delivery_address": {
+                "full_name": "Ion Guest",
+                "city": "Chișinău",
+                "street": "str. Testului 1",
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert Decimal(body["subtotal"]) == Decimal("249")
+    assert Decimal(body["discount_total"]) == Decimal("25")  # 24.90 → 25
+    assert Decimal(body["delivery_cost"]) == Decimal("50")
+    # 249 - 25 + 50 = 274, whole MDL (was 274.10 before BUG-02 fix).
+    assert Decimal(body["total"]) == Decimal("274")
+
+
 async def test_quote_fixed_discount(client, add_product, add_promo) -> None:
     """A valid fixed code subtracts a flat amount from the subtotal."""
     await _seed_line(client, add_product, product_id=1, price="100.00", qty=1)
