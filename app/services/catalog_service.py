@@ -34,6 +34,9 @@ from app.schemas.catalog import (
     SitemapData,
     SitemapEntry,
     SitemapSlug,
+    VariantOut,
+    VariationAttributeOut,
+    VariationValueOut,
 )
 
 # Listing page size for keyset pagination (§5.3).
@@ -474,6 +477,25 @@ class CatalogService:
         media = await self.repo.get_product_media(product.id)
         attribute_rows = await self.repo.get_product_attributes(product.id, lang)
         attributes = self._group_attributes(attribute_rows)
+
+        # Variant view: for variable products price/stock come from the variants,
+        # with ``price`` holding the min ("from") and ``price_max`` the range top.
+        variation_attributes: list[VariationAttributeOut] = []
+        variants: list[VariantOut] = []
+        price_min = product.price
+        price_max: Decimal | None = None
+        in_stock = product.qty > 0
+        if product.has_variants:
+            variation_attributes, variants = await self._load_variant_view(
+                product.id, lang
+            )
+            prices = [v.price for v in variants]
+            if prices:
+                price_min = min(prices)
+                top = max(prices)
+                price_max = top if top != price_min else None
+            in_stock = any(v.in_stock for v in variants)
+
         all_translations = await self.repo.get_product_translations(product.id)
         slugs = [ProductSlug(lang=tr.lang, slug=tr.slug) for tr in all_translations]
         category = await self.repo.get_category(product.category_id)
@@ -493,9 +515,14 @@ class CatalogService:
             description=translation.description,
             seo_title=translation.seo_title,
             seo_description=translation.seo_description,
-            price=product.price,
+            price=price_min,
             old_price=product.old_price,
-            in_stock=product.qty > 0,
+            has_variants=product.has_variants,
+            price_min=price_min,
+            price_max=price_max,
+            variation_attributes=variation_attributes,
+            variants=variants,
+            in_stock=in_stock,
             in_cart_count=in_cart_count,
             rating_avg=round(rating_avg, 1) if rating_avg is not None else None,
             rating_count=rating_count,
@@ -558,6 +585,63 @@ class CatalogService:
             group.values.append(value)
         return list(grouped.values())
 
+    @staticmethod
+    def _group_variation_attributes(
+        rows: list[tuple[int, str, str, int, int, str]],
+    ) -> list[VariationAttributeOut]:
+        """Group variation-selector rows into one selector per attribute.
+
+        Args:
+            rows: ``(attribute_id, code, name, position, value_id, value)`` already
+                ordered by selector position, then code, then value.
+
+        Returns:
+            list[VariationAttributeOut]: Selectors in position order, each with its
+                selectable options.
+        """
+        grouped: dict[int, VariationAttributeOut] = {}
+        for attribute_id, code, name, _position, value_id, value in rows:
+            group = grouped.get(attribute_id)
+            if group is None:
+                group = VariationAttributeOut(
+                    attribute_id=attribute_id, code=code, name=name, values=[]
+                )
+                grouped[attribute_id] = group
+            group.values.append(VariationValueOut(value_id=value_id, value=value))
+        return list(grouped.values())
+
+    async def _load_variant_view(
+        self, product_id: int, lang: str
+    ) -> tuple[list[VariationAttributeOut], list[VariantOut]]:
+        """Load a variable product's selectors + variants for its PDP (no N+1).
+
+        Args:
+            product_id: Product primary key.
+            lang: Requested language code.
+
+        Returns:
+            tuple: ``(variation_attributes, variants)``.
+        """
+        attr_rows = await self.repo.get_variation_attributes(product_id, lang)
+        variation_attributes = self._group_variation_attributes(attr_rows)
+        variants = await self.repo.get_product_variants(product_id)
+        variant_ids = [v.id for v in variants]
+        value_ids = await self.repo.get_variant_value_ids(variant_ids)
+        image_urls = await self.repo.get_variant_image_urls(variant_ids)
+        out = [
+            VariantOut(
+                id=v.id,
+                code=v.code,
+                price=v.price,
+                old_price=v.old_price,
+                in_stock=v.qty > 0,
+                value_ids=value_ids.get(v.id, []),
+                image_url=image_urls.get(v.id),
+            )
+            for v in variants
+        ]
+        return variation_attributes, out
+
     # ------------------------------------------------------------------ #
     # product_card read-model rebuild + publication rule (§5.2 / §2.1.1)
     # ------------------------------------------------------------------ #
@@ -613,8 +697,26 @@ class CatalogService:
         category = await self.repo.get_category(product.category_id)
         path = category.path if category is not None else [product.category_id]
         main_image_url = await self.repo.get_main_image_url(product_id)
+
+        # Variable products source price/stock/sale from their active variants:
+        # ``price`` holds the min, ``price_max`` the range top (NULL if uniform),
+        # ``old_price`` is dropped (a range is shown, not a single strike).
+        price = product.price
+        price_max: Decimal | None = None
+        old_price = product.old_price
         in_stock = product.qty > 0
-        badge = self._compute_badge(product.old_price is not None)
+        on_sale = product.old_price is not None
+        if product.has_variants:
+            v_min, v_max, any_stock, any_sale = await self.repo.get_variant_aggregate(
+                product_id
+            )
+            if v_min is not None:
+                price = v_min
+                price_max = v_max if v_max != v_min else None
+            in_stock = any_stock
+            on_sale = any_sale
+            old_price = None
+        badge = self._compute_badge(on_sale)
         translations = await self.repo.get_product_translations(product_id)
 
         written = 0
@@ -625,8 +727,9 @@ class CatalogService:
                 category_id=product.category_id,
                 name=translation.name,
                 slug=translation.slug,
-                price=product.price,
-                old_price=product.old_price,
+                price=price,
+                old_price=old_price,
+                price_max=price_max,
                 in_stock=in_stock,
                 main_image_url=main_image_url,
                 badge=badge,

@@ -80,6 +80,9 @@ class ProductCardOut(BaseModel):
     slug: str
     price: Decimal
     old_price: Decimal | None = None
+    # For variable products: the max variant price when it differs from ``price``
+    # (which holds the min) → the storefront renders "from {price}". NULL otherwise.
+    price_max: Decimal | None = None
     in_stock: bool
     main_image_url: str | None = None
     badge: str | None = None
@@ -122,6 +125,39 @@ class ProductSlug(BaseModel):
     slug: str
 
 
+class VariationValueOut(BaseModel):
+    """One selectable option of a variation-defining attribute (with its id)."""
+
+    value_id: int
+    value: str
+
+
+class VariationAttributeOut(BaseModel):
+    """A variation selector: attribute + its selectable, localized options.
+
+    The frontend renders one picker per entry and maps a full selection
+    (one ``value_id`` per attribute) to a variant via ``VariantOut.value_ids``.
+    """
+
+    attribute_id: int
+    code: str
+    name: str
+    values: list[VariationValueOut] = Field(default_factory=list)
+
+
+class VariantOut(BaseModel):
+    """One purchasable variant of a variable product (price/stock/options)."""
+
+    id: int
+    code: str | None = None
+    price: Decimal
+    old_price: Decimal | None = None
+    in_stock: bool
+    # The attribute values (one per variation attribute) that define this variant.
+    value_ids: list[int] = Field(default_factory=list)
+    image_url: str | None = None
+
+
 class ProductDetail(BaseModel):
     """Product detail page (PDP): product + grouped attributes + media + slugs."""
 
@@ -134,6 +170,16 @@ class ProductDetail(BaseModel):
     seo_description: str | None = None
     price: Decimal
     old_price: Decimal | None = None
+    # Variable products (§ variants). ``has_variants`` toggles the storefront
+    # variant selector. ``price`` holds the min (the "from" price); ``price_max``
+    # is set only when it differs → the PDP shows a "from–to" range. ``variants``
+    # + ``variation_attributes`` let the frontend resolve a selection → price
+    # client-side (no extra round-trip). All empty/False for simple products.
+    has_variants: bool = False
+    price_min: Decimal | None = None
+    price_max: Decimal | None = None
+    variation_attributes: list[VariationAttributeOut] = Field(default_factory=list)
+    variants: list[VariantOut] = Field(default_factory=list)
     in_stock: bool
     # Honest social-proof signal: real number of distinct *live* carts (draft
     # status) currently holding this product. Never randomized/inflated. The

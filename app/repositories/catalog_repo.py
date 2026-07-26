@@ -28,6 +28,9 @@ from app.models.catalog import (
     ProductAttribute,
     ProductCard,
     ProductTranslation,
+    ProductVariant,
+    ProductVariantValue,
+    ProductVariationAttribute,
 )
 
 
@@ -562,6 +565,149 @@ class CatalogRepository:
         )
         rows = await self.session.execute(stmt)
         return [tuple(row) for row in rows.all()]
+
+    # ------------------------------------------------------------------ #
+    # variants (variable products)
+    # ------------------------------------------------------------------ #
+    async def get_variant_aggregate(
+        self, product_id: int
+    ) -> tuple[Decimal | None, Decimal | None, bool, bool]:
+        """Aggregate a product's ACTIVE variants for the card read-model.
+
+        Args:
+            product_id: Product primary key.
+
+        Returns:
+            tuple: ``(min_price, max_price, any_in_stock, any_on_sale)``.
+                ``(None, None, False, False)`` when there are no active variants.
+        """
+        stmt = select(
+            func.min(ProductVariant.price),
+            func.max(ProductVariant.price),
+            func.bool_or(ProductVariant.qty > 0),
+            func.bool_or(
+                and_(
+                    ProductVariant.old_price.is_not(None),
+                    ProductVariant.old_price > ProductVariant.price,
+                )
+            ),
+        ).where(
+            ProductVariant.product_id == product_id,
+            ProductVariant.is_active.is_(True),
+        )
+        row = (await self.session.execute(stmt)).one()
+        return row[0], row[1], bool(row[2]), bool(row[3])
+
+    async def get_variation_attributes(
+        self, product_id: int, lang: str
+    ) -> list[tuple[int, str, str, int, int, str]]:
+        """Return variation-selector options for a product (no N+1).
+
+        One row per ``(attribute, value)`` actually present in the product's
+        active variants, ordered by selector position then value.
+
+        Args:
+            product_id: Product primary key.
+            lang: Requested language code.
+
+        Returns:
+            list[tuple]: ``(attribute_id, code, name, position, value_id, value)``.
+        """
+        stmt = (
+            select(
+                Attribute.id,
+                Attribute.code,
+                AttributeTranslation.name,
+                ProductVariationAttribute.position,
+                AttributeValue.id,
+                AttributeValueTranslation.value,
+            )
+            .join(
+                ProductVariationAttribute,
+                ProductVariationAttribute.attribute_id == Attribute.id,
+            )
+            .join(AttributeValue, AttributeValue.attribute_id == Attribute.id)
+            .join(
+                ProductVariantValue,
+                ProductVariantValue.value_id == AttributeValue.id,
+            )
+            .join(
+                ProductVariant,
+                and_(
+                    ProductVariant.id == ProductVariantValue.variant_id,
+                    ProductVariant.product_id == product_id,
+                    ProductVariant.is_active.is_(True),
+                ),
+            )
+            .join(
+                AttributeTranslation,
+                and_(
+                    AttributeTranslation.attribute_id == Attribute.id,
+                    AttributeTranslation.lang == lang,
+                ),
+            )
+            .join(
+                AttributeValueTranslation,
+                and_(
+                    AttributeValueTranslation.value_id == AttributeValue.id,
+                    AttributeValueTranslation.lang == lang,
+                ),
+            )
+            .where(ProductVariationAttribute.product_id == product_id)
+            .order_by(
+                ProductVariationAttribute.position,
+                Attribute.code,
+                AttributeValueTranslation.value,
+            )
+            .distinct()
+        )
+        rows = await self.session.execute(stmt)
+        return [tuple(row) for row in rows.all()]
+
+    async def get_product_variants(self, product_id: int) -> list[ProductVariant]:
+        """Return a product's ACTIVE variants ordered by ``position`` (no N+1)."""
+        stmt = (
+            select(ProductVariant)
+            .where(
+                ProductVariant.product_id == product_id,
+                ProductVariant.is_active.is_(True),
+            )
+            .order_by(ProductVariant.position, ProductVariant.id)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_variant_value_ids(
+        self, variant_ids: list[int]
+    ) -> dict[int, list[int]]:
+        """Return ``{variant_id: [value_id, ...]}`` for the given variants."""
+        if not variant_ids:
+            return {}
+        stmt = (
+            select(ProductVariantValue.variant_id, ProductVariantValue.value_id)
+            .where(ProductVariantValue.variant_id.in_(variant_ids))
+            .order_by(ProductVariantValue.variant_id, ProductVariantValue.value_id)
+        )
+        result: dict[int, list[int]] = {}
+        for variant_id, value_id in (await self.session.execute(stmt)).all():
+            result.setdefault(variant_id, []).append(value_id)
+        return result
+
+    async def get_variant_image_urls(
+        self, variant_ids: list[int]
+    ) -> dict[int, str]:
+        """Return ``{variant_id: main_image_url}`` (lowest-position media each)."""
+        if not variant_ids:
+            return {}
+        stmt = (
+            select(Media.variant_id, Media.url)
+            .where(Media.variant_id.in_(variant_ids))
+            .order_by(Media.variant_id, Media.position, Media.id)
+        )
+        result: dict[int, str] = {}
+        for variant_id, url in (await self.session.execute(stmt)).all():
+            if variant_id not in result:  # first seen = lowest position
+                result[variant_id] = url
+        return result
 
     # ------------------------------------------------------------------ #
     # product_card read-model (§5.2) write side
