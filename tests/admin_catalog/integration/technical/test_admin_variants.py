@@ -621,3 +621,87 @@ async def test_create_variant_keeps_has_variants_true(
     product = await db_session.get(Product, product_id)
     assert product is not None
     assert product.has_variants is True
+
+
+# --------------------------------------------------------------------------- #
+# Hardening: delete cleanup + publication guard + price/qty sync
+# --------------------------------------------------------------------------- #
+async def _active_variable_product(
+    client: AsyncClient, code: str, base: str = "99.00", vprice: str = "17.00"
+) -> tuple[int, int, int]:
+    """An ACTIVE variable product with one active variant. Returns
+    (product_id, variant_id, value_id)."""
+    product_id = await _make_product(client, code, price=base)
+    color = await _make_attribute(client, f"c-{code}")
+    red = await _make_value(client, color, "red")
+    await _set_variation_attrs(client, product_id, [color])
+    r = await client.post(
+        f"/api/v1/admin/products/{product_id}/variants",
+        json={"value_ids": [red], "price": vprice, "qty": 5},
+    )
+    assert r.status_code == 201, r.text
+    variant_id = r.json()["id"]
+    a = await client.patch(
+        f"/api/v1/admin/products/{product_id}", json={"is_active": True}
+    )
+    assert a.status_code == 200, a.text
+    return product_id, variant_id, red
+
+
+async def test_delete_variable_product_cleans_variants(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A variable product can be deleted; its variant rows are cleaned (no FK)."""
+    product_id = await _make_product(client, "VAR-DEL")
+    color = await _make_attribute(client, "color")
+    red = await _make_value(client, color, "red")
+    await _set_variation_attrs(client, product_id, [color])
+    r = await client.post(
+        f"/api/v1/admin/products/{product_id}/variants",
+        json={"value_ids": [red], "price": "10.00"},
+    )
+    assert r.status_code == 201, r.text
+
+    d = await client.delete(f"/api/v1/admin/products/{product_id}")
+    assert d.status_code == 204, d.text
+
+    left = (
+        (
+            await db_session.execute(
+                select(ProductVariant).where(ProductVariant.product_id == product_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert left == []
+
+
+async def test_delete_last_active_variant_of_active_product_409(
+    client: AsyncClient,
+) -> None:
+    """Deleting the last active variant of an ACTIVE product is a clean 409."""
+    _, variant_id, _ = await _active_variable_product(client, "VAR-GUARD-D")
+    r = await client.delete(f"/api/v1/admin/variants/{variant_id}")
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "not_publishable"
+
+
+async def test_deactivate_last_active_variant_409(client: AsyncClient) -> None:
+    """Deactivating the last active variant of an ACTIVE product is a clean 409."""
+    _, variant_id, _ = await _active_variable_product(client, "VAR-GUARD-U")
+    r = await client.patch(
+        f"/api/v1/admin/variants/{variant_id}", json={"is_active": False}
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "not_publishable"
+
+
+async def test_product_price_qty_synced_from_variants(client: AsyncClient) -> None:
+    """product.price/qty are synced to the active-variant aggregate on rebuild."""
+    product_id, _, _ = await _active_variable_product(
+        client, "VAR-SYNC", base="99.00", vprice="17.00"
+    )
+    p = (await client.get(f"/api/v1/admin/products/{product_id}")).json()
+    assert p["price"] == "17.00"  # min variant price, not the 99.00 base
+    assert p["qty"] == 5  # sum of active-variant qty

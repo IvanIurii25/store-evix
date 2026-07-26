@@ -571,15 +571,15 @@ class CatalogRepository:
     # ------------------------------------------------------------------ #
     async def get_variant_aggregate(
         self, product_id: int
-    ) -> tuple[Decimal | None, Decimal | None, bool, bool]:
+    ) -> tuple[Decimal | None, Decimal | None, bool, bool, int]:
         """Aggregate a product's ACTIVE variants for the card read-model.
 
         Args:
             product_id: Product primary key.
 
         Returns:
-            tuple: ``(min_price, max_price, any_in_stock, any_on_sale)``.
-                ``(None, None, False, False)`` when there are no active variants.
+            tuple: ``(min_price, max_price, any_in_stock, any_on_sale, total_qty)``.
+                ``(None, None, False, False, 0)`` when there are no active variants.
         """
         stmt = select(
             func.min(ProductVariant.price),
@@ -591,12 +591,13 @@ class CatalogRepository:
                     ProductVariant.old_price > ProductVariant.price,
                 )
             ),
+            func.coalesce(func.sum(ProductVariant.qty), 0),
         ).where(
             ProductVariant.product_id == product_id,
             ProductVariant.is_active.is_(True),
         )
         row = (await self.session.execute(stmt)).one()
-        return row[0], row[1], bool(row[2]), bool(row[3])
+        return row[0], row[1], bool(row[2]), bool(row[3]), int(row[4])
 
     async def get_variation_attributes(
         self, product_id: int, lang: str

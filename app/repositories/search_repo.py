@@ -270,7 +270,9 @@ class SearchRepository:
         """
         stmt = select(
             func.min(ProductCard.price),
-            func.max(ProductCard.price),
+            # For variable products the range top is ``price_max`` (NULL for
+            # simple/uniform), so the upper bound must consider it.
+            func.max(func.coalesce(ProductCard.price_max, ProductCard.price)),
         ).where(
             ProductCard.is_active.is_(True),
             ProductCard.lang == lang,

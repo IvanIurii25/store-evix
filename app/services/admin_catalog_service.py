@@ -580,6 +580,34 @@ class AdminCatalogService:
         await self.session.execute(
             delete(ProductAttribute).where(ProductAttribute.product_id == product_id)
         )
+        # Variant cleanup (order matters — FKs have no cascade): values → variants
+        # → variation attributes. Media (incl. variant-bound) was deleted above;
+        # order_item.variant_id is SET NULL so order history survives.
+        variant_ids = list(
+            (
+                await self.session.execute(
+                    select(ProductVariant.id).where(
+                        ProductVariant.product_id == product_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if variant_ids:
+            await self.session.execute(
+                delete(ProductVariantValue).where(
+                    ProductVariantValue.variant_id.in_(variant_ids)
+                )
+            )
+        await self.session.execute(
+            delete(ProductVariationAttribute).where(
+                ProductVariationAttribute.product_id == product_id
+            )
+        )
+        await self.session.execute(
+            delete(ProductVariant).where(ProductVariant.product_id == product_id)
+        )
         # Drop the read-model rows (product may have been active).
         await self.catalog.repo.delete_product_cards(product_id)
         await self.session.delete(product)
@@ -989,6 +1017,11 @@ class AdminCatalogService:
         for field, value in data.items():
             setattr(variant, field, value)
         await self.session.flush()
+        # Guard: don't leave an ACTIVE product with no active variants (e.g. by
+        # deactivating its last one). PublicationError rolls the change back.
+        product = await self._get_product(variant.product_id)
+        if product.is_active:
+            await self.catalog.assert_publishable(variant.product_id)
         await self.catalog.rebuild_cards([variant.product_id])
         await self.session.commit()
         self._enqueue_es_reindex([variant.product_id])
@@ -1018,6 +1051,11 @@ class AdminCatalogService:
             delete(ProductVariant).where(ProductVariant.id == variant_id)
         )
         await self.session.flush()
+        # Guard: deleting the last active variant of an ACTIVE product would leave
+        # it published but unbuyable. PublicationError rolls the delete back.
+        product = await self._get_product(product_id)
+        if product.is_active:
+            await self.catalog.assert_publishable(product_id)
         await self.catalog.rebuild_cards([product_id])
         await self.session.commit()
         self._enqueue_es_reindex([product_id])

@@ -672,7 +672,7 @@ class CatalogService:
             )
         # A variable product needs at least one active variant to be buyable.
         if product.has_variants:
-            v_min, _v_max, _stock, _sale = await self.repo.get_variant_aggregate(
+            v_min, _v_max, _stock, _sale, _qty = await self.repo.get_variant_aggregate(
                 product_id
             )
             if v_min is None:
@@ -720,12 +720,21 @@ class CatalogService:
         in_stock = product.qty > 0
         on_sale = product.old_price is not None
         if product.has_variants:
-            v_min, v_max, any_stock, any_sale = await self.repo.get_variant_aggregate(
-                product_id
-            )
+            (
+                v_min,
+                v_max,
+                any_stock,
+                any_sale,
+                total_qty,
+            ) = await self.repo.get_variant_aggregate(product_id)
             if v_min is not None:
                 price = v_min
                 price_max = v_max if v_max != v_min else None
+                # Keep the product's own price/qty in sync with the variant
+                # aggregate so admin surfaces reading product.price/qty directly
+                # (list, low-stock filter) aren't stale for variable products.
+                product.price = v_min
+                product.qty = total_qty
             in_stock = any_stock
             on_sale = any_sale
             old_price = None
