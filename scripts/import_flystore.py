@@ -59,7 +59,7 @@ DRY_RUN = os.environ.get("DRY_RUN") == "1"
 _HOST_IP = os.environ.get("API_HOST_IP")
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
 _UNCATEGORIZED = "uncategorized"
 
 
