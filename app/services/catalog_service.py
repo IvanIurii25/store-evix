@@ -495,6 +495,10 @@ class CatalogService:
                 top = max(prices)
                 price_max = top if top != price_min else None
             in_stock = any(v.in_stock for v in variants)
+            # Variation-defining attributes are already shown as selectors, so
+            # drop them from the flat characteristics list to avoid duplication.
+            variation_codes = {va.code for va in variation_attributes}
+            attributes = [a for a in attributes if a.code not in variation_codes]
 
         all_translations = await self.repo.get_product_translations(product.id)
         slugs = [ProductSlug(lang=tr.lang, slug=tr.slug) for tr in all_translations]

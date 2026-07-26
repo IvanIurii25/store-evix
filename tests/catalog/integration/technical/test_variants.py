@@ -12,6 +12,7 @@ from app.models.catalog import (
     AttributeValueTranslation,
     Media,
     Product,
+    ProductAttribute,
     ProductCard,
     ProductVariant,
     ProductVariantValue,
@@ -211,3 +212,27 @@ async def test_publication_rule_variable_requires_active_variant(seed):
     )
     await session.flush()
     await service.assert_publishable(510)  # no raise now
+
+
+@pytest.mark.asyncio
+async def test_variation_attributes_excluded_from_characteristics(seed):
+    """A selector attribute must not be duplicated in the flat characteristics."""
+    ids = await _seed_variable_product(
+        seed, product_id=520, slug="kovrik-dedup", prices=("179.00", "249.00"),
+        qtys=(5, 5),
+    )
+    session = seed["session"]
+    # Mimic import/backfill: the color values are also linked as flat attributes.
+    session.add_all(
+        [
+            ProductAttribute(product_id=520, value_id=ids["beige"]),
+            ProductAttribute(product_id=520, value_id=ids["grey"]),
+        ]
+    )
+    await session.flush()
+
+    detail = await seed["service"].get_product("kovrik-dedup-ro", "ro")
+    # "color" is a selector → present in variation_attributes, absent from the
+    # flat characteristics list (no duplication on the PDP).
+    assert any(va.code == "color" for va in detail.variation_attributes)
+    assert all(a.code != "color" for a in detail.attributes)
