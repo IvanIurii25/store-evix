@@ -278,8 +278,9 @@ class OrderRepository:
         delivery_street: str | None = None,
         delivery_zip: str | None = None,
         promo_code: str | None = None,
+        payment_method: str = "cod",
     ) -> Order:
-        """Instantiate and stage a new ``new`` / ``pending`` COD order (§9.6).
+        """Instantiate and stage a new ``new`` / ``pending`` order (§9.6).
 
         Args:
             number: Pre-generated order number.
@@ -297,6 +298,8 @@ class OrderRepository:
             delivery_street: Courier address snapshot — street, else ``None``.
             delivery_zip: Courier address snapshot — postal code, else ``None``.
             promo_code: Redeemed coupon code snapshot (soft link), else ``None``.
+            payment_method: ``cod`` (default) or ``card``. COD callers omit it and
+                get the unchanged behaviour.
 
         Returns:
             Order: The staged (not yet flushed) order.
@@ -318,7 +321,7 @@ class OrderRepository:
             delivery_city=delivery_city,
             delivery_street=delivery_street,
             delivery_zip=delivery_zip,
-            payment_method="cod",
+            payment_method=payment_method,
             promo_code=promo_code,
         )
         self.session.add(order)

@@ -10,9 +10,11 @@ so an unauthenticated SSR render can fetch them. Writes stay admin-only.
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_session
 from app.schemas.admin_settings import SeoSettings
 from app.schemas.content_page import ContentPageDetail, ContentPageListItem
+from app.schemas.payment import SiteConfigOut
 from app.services.admin_settings_service import SettingsService
 from app.services.content_page_service import (
     ContentPageNotFoundError,
@@ -38,6 +40,19 @@ async def get_site_seo(
         SeoSettings: A fully-formed block (empty strings on a fresh install).
     """
     return await SettingsService(session).get_seo()
+
+
+@router.get("/config", response_model=SiteConfigOut)
+async def get_site_config() -> SiteConfigOut:
+    """Return public storefront runtime config (feature flags), read-only.
+
+    Currently exposes only ``card_payment_enabled`` so the checkout UI can decide
+    whether to render the card option next to COD. No DB access, no PII.
+
+    Returns:
+        SiteConfigOut: The public config block.
+    """
+    return SiteConfigOut(card_payment_enabled=settings.card_payment_enabled)
 
 
 @router.get("/pages", response_model=list[ContentPageListItem])

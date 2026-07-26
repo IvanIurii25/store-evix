@@ -30,6 +30,7 @@ from app.models.user import Address
 from app.repositories.order_repo import NAME_LANG, OrderRepository
 from app.repositories.user_repo import UserRepository
 from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
+from app.services.payment.payment_service import PaymentService
 from app.services.promo_service import PromoService
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,11 @@ logger = logging.getLogger(__name__)
 # Delivery types (§9.4). ``courier`` requires an address; ``pickup`` is free.
 PICKUP: str = "pickup"
 COURIER: str = "courier"
+
+# Payment methods. ``cod`` is the default (unchanged path); ``card`` triggers the
+# maib payment initiation after the order is persisted.
+_COD: str = "cod"
+_CARD: str = "card"
 
 # Zero money constant (baseline discount / free delivery).
 _ZERO: Decimal = Decimal("0")
@@ -194,6 +200,8 @@ class CheckoutService:
         delivery_address_id: int | None,
         delivery_address: DeliveryAddressIn | None = None,
         promo_code: str | None = None,
+        payment_method: str = "cod",
+        client_ip: str | None = None,
         lang: str = NAME_LANG,
     ) -> OrderOut:
         """Create an order from the caller's cart in one transaction (§9.6).
@@ -249,7 +257,7 @@ class CheckoutService:
         )
         applied_code = promo_code if discount_total > _ZERO else None
 
-        return await self._persist_order(
+        order_out = await self._persist_order(
             lines=lines,
             user_id=user_id,
             email=email,
@@ -260,7 +268,13 @@ class CheckoutService:
             snapshot=(snap_name, snap_city, snap_street, snap_zip),
             promo_code=applied_code,
             cart_id=cart.id,
+            payment_method=payment_method,
         )
+        if payment_method == _CARD:
+            order_out.pay_url = await self._initiate_card_payment(
+                order_out.number, client_ip
+            )
+        return order_out
 
     # ------------------------------------------------------------------ #
     # Quick buy (one-click COD, feature A2 — no cart, single product)
@@ -367,6 +381,7 @@ class CheckoutService:
         snapshot: _DeliverySnapshot,
         promo_code: str | None,
         cart_id: int | None,
+        payment_method: str = "cod",
     ) -> OrderOut:
         """Create the order + lines in one transaction (§9.6, shared core).
 
@@ -414,6 +429,7 @@ class CheckoutService:
             delivery_street=snap_street,
             delivery_zip=snap_zip,
             promo_code=promo_code,
+            payment_method=payment_method,
         )
         await self.session.flush()  # assign order.id
         # Pull DB-side ``created_at`` (server_default) onto the instance so the
@@ -456,6 +472,36 @@ class CheckoutService:
         await self.session.commit()
         await self._send_confirmation(order.number, email, order.total)
         return self._build_order_out(order, item_models)
+
+    # ------------------------------------------------------------------ #
+    # Card payment initiation (maib) — only when payment_method == card
+    # ------------------------------------------------------------------ #
+    async def _initiate_card_payment(
+        self,
+        order_number: str,
+        client_ip: str | None,
+    ) -> str:
+        """Initiate the maib payment for a just-created card order → payUrl.
+
+        Loads the committed order fresh (it was created in :meth:`_persist_order`),
+        delegates to :class:`~app.services.payment.payment_service.PaymentService`
+        to create the ``payment`` row and call maib ``/pay``, and returns the
+        ``payUrl``. Bound to the same session so the payment row commits alongside.
+
+        Args:
+            order_number: The created order's number.
+            client_ip: The payer's IP (``0.0.0.0`` fallback when unavailable).
+
+        Returns:
+            str: The maib ``payUrl`` for the storefront redirect.
+        """
+        order = await self.repo.get_order_by_number(order_number)
+        payment_service = PaymentService(self.session)
+        return await payment_service.initiate_card_payment(
+            order,
+            client_ip=client_ip or "0.0.0.0",
+            lang=NAME_LANG,
+        )
 
     # ------------------------------------------------------------------ #
     # Helpers

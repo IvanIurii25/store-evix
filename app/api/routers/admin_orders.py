@@ -28,6 +28,12 @@ from app.schemas.admin_orders import AdminOrderList, TransitionRequest
 from app.schemas.order import OrderItemOut, OrderOut
 from app.services.admin_order_service import AdminOrderService, OrderNotFoundError
 from app.services.order_service import IllegalTransitionError
+from app.services.payment.maib_client import MaibError
+from app.services.payment.payment_service import (
+    PaymentNotFoundError,
+    PaymentService,
+    RefundNotAllowedError,
+)
 
 router = APIRouter(
     prefix="/admin/orders",
@@ -192,4 +198,63 @@ async def transition_order(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "illegal_transition", "message": str(exc)},
         ) from exc
+    return _to_out(order, items)
+
+
+@router.post("/{number}/refund", response_model=OrderOut)
+async def refund_order(
+    number: str,
+    _staff: AppUser = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+) -> OrderOut:
+    """Refund a paid card order via maib and mark it ``refunded`` (§card-payment).
+
+    Only a card order whose ``payment_status`` is ``paid`` is refundable; anything
+    else is rejected 409. Delegates the maib refund + the ``refunded`` transition
+    to :class:`~app.services.payment.payment_service.PaymentService`.
+
+    Args:
+        number: The order number to refund.
+        staff: The authenticated staff user (guards the endpoint).
+        session: Injected async DB session.
+
+    Returns:
+        OrderOut: The refunded order with its lines.
+
+    Raises:
+        HTTPException: 404 if the order/payment is unknown; 409 if the order is
+            not a paid card order; 502 if the maib refund call fails.
+    """
+    admin_service = AdminOrderService(session)
+    try:
+        order, _ = await admin_service.get_order(number)
+    except OrderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "order_not_found", "message": str(exc)},
+        ) from exc
+
+    payment_service = PaymentService(session)
+    try:
+        await payment_service.refund(order)
+    except RefundNotAllowedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "refund_not_allowed", "message": str(exc)},
+        ) from exc
+    except PaymentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "payment_not_found", "message": str(exc)},
+        ) from exc
+    except MaibError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "payment_gateway_error",
+                "message": "Refund failed at the payment provider",
+            },
+        ) from exc
+
+    order, items = await admin_service.get_order(number)
     return _to_out(order, items)

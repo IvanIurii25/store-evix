@@ -78,6 +78,36 @@ class Settings(BaseSettings):
         """True when the ES backend is selected (runtime health checked separately)."""
         return self.search_backend.strip().lower() == "elastic"
 
+    # --- Card payment via maib e-Commerce API (env-gated) ---
+    # Card is a second option next to COD. It is available ONLY when all three
+    # maib credentials below are set; otherwise the option stays hidden and the
+    # COD money-path is byte-for-byte unchanged (see ``card_payment_enabled``).
+    # Base URL of the maibmerchants v1 REST API (no trailing slash).
+    maib_base_url: str = "https://api.maibmerchants.md/v1"
+    # Credentials issued by maib; empty in dev/prod-inert until provisioned.
+    maib_project_id: str = ""
+    maib_project_secret: str = ""
+    # Callback-signature secret; used to verify the webhook payload signature.
+    maib_signature_key: str = ""
+    # Public base URL of THIS API, as reachable by maib's servers, used to build
+    # the callback URL maib POSTs the result to (e.g. https://api.evix.md). No
+    # trailing slash. Distinct from ``storefront_base_url`` (the ok/fail returns
+    # go to the storefront). Empty in dev.
+    maib_callback_base_url: str = ""
+
+    @property
+    def card_payment_enabled(self) -> bool:
+        """True only when all three maib credentials are configured.
+
+        When any credential is missing the card option is unavailable and the
+        checkout / COD flow behaves exactly as before (no maib call is made).
+        """
+        return bool(
+            self.maib_project_id
+            and self.maib_project_secret
+            and self.maib_signature_key
+        )
+
     # Store config (§2.6): single-tenant → app config, not a DB singleton.
     currency: str = "MDL"  # one fixed currency; no currency column in DB
     default_lang: str = "ro"  # ru | ro

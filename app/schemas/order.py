@@ -82,6 +82,11 @@ class CheckoutRequest(BaseModel):
         max_length=64,
         description="Optional coupon code; re-validated server-side at order time.",
     )
+    payment_method: str = Field(
+        default="cod",
+        description="Payment method: 'cod' (default) or 'card' (maib). 'card' "
+        "is accepted only when card payment is enabled server-side.",
+    )
 
 
 class QuickBuyRequest(BaseModel):
@@ -167,3 +172,6 @@ class OrderOut(BaseModel):
     payment_method: str
     created_at: datetime
     items: list[OrderItemOut] = Field(default_factory=list)
+    # Set only for a card (maib) checkout: the maib payUrl the storefront
+    # redirects the payer to. ``None`` for COD (behaviour unchanged).
+    pay_url: str | None = None

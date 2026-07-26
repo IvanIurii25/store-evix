@@ -39,6 +39,7 @@ from app.services.checkout_service import (
     OutOfStockError,
     ProductNotFoundError,
 )
+from app.services.payment.maib_client import MaibError
 from app.services.promo_service import (
     PromoExpiredError,
     PromoInvalidError,
@@ -50,6 +51,55 @@ router = APIRouter(prefix="/checkout", tags=["checkout"])
 
 # Guest cart cookie name (shared with the cart router, §2.3).
 SESSION_COOKIE: str = "session_token"
+
+# Accepted payment methods. ``card`` is only allowed when card payment is enabled.
+_PAYMENT_METHODS: frozenset[str] = frozenset({"cod", "card"})
+
+
+def _validate_payment_method(payment_method: str) -> None:
+    """Reject an unknown method, or ``card`` while card payment is disabled.
+
+    Args:
+        payment_method: The requested method (``cod`` | ``card``).
+
+    Raises:
+        HTTPException: 422 for an unknown method; 400 ``card_payment_disabled``
+            when ``card`` is requested but not enabled server-side.
+    """
+    if payment_method not in _PAYMENT_METHODS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_payment_method",
+                "message": f"Unknown payment method: {payment_method}",
+            },
+        )
+    if payment_method == "card" and not settings.card_payment_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "card_payment_disabled",
+                "message": "Card payment is not available",
+            },
+        )
+
+
+def _client_ip(request: Request) -> str | None:
+    """Return the caller's IP for the maib fraud/3-DS signal, if resolvable.
+
+    Prefers the first ``X-Forwarded-For`` hop (behind Cloudflare / a proxy),
+    falling back to the socket peer. ``None`` when neither is available.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        str | None: The client IP, or ``None``.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
 
 
 def _read_session_token(request: Request) -> UUID | None:
@@ -208,6 +258,7 @@ async def checkout(
         HTTPException: 400 empty cart; 422 courier without an address; 403 for a
             ``delivery_address_id`` the caller does not own.
     """
+    _validate_payment_method(data.payment_method)
     user_id, token = _caller_identity(request, user)
     service = CheckoutService(session)
     try:
@@ -220,6 +271,8 @@ async def checkout(
             delivery_address_id=data.delivery_address_id,
             delivery_address=data.delivery_address,
             promo_code=data.promo_code,
+            payment_method=data.payment_method,
+            client_ip=_client_ip(request),
             lang=lang,
         )
     except EmptyCartError as exc:
@@ -250,6 +303,15 @@ async def checkout(
             code="out_of_stock",
             message=str(exc),
             details={"product_id": exc.product_id},
+        )
+    except MaibError:
+        # The order was created (pending) but maib was unreachable; the payment
+        # row stays pending for reconciliation. Surface a gateway error so the
+        # storefront can prompt a retry.
+        return error_response(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            code="payment_gateway_error",
+            message="Payment provider is unavailable, please try again",
         )
 
 
