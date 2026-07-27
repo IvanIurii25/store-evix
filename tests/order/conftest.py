@@ -226,6 +226,7 @@ _RACE_TABLES: tuple[str, ...] = (
     "category_translation",
     "category",
     "promo_code",
+    "app_user",
 )
 
 

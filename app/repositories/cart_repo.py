@@ -43,11 +43,16 @@ class CartRepository:
     # ------------------------------------------------------------------ #
     # Cart resolution
     # ------------------------------------------------------------------ #
-    async def get_cart_by_user(self, user_id: int) -> Cart | None:
+    async def get_cart_by_user(
+        self, user_id: int, *, for_update: bool = False
+    ) -> Cart | None:
         """Return the active (``draft``) cart for a user, if any.
 
         Args:
             user_id: Owning user id.
+            for_update: Take a ``FOR UPDATE`` lock on the cart row so all writes
+                to this cart serialize on it (mutex — prevents lost qty updates
+                and check-then-act races). Reads leave it ``False``.
 
         Returns:
             Cart | None: The user's active cart, or ``None``.
@@ -56,13 +61,19 @@ class CartRepository:
             Cart.user_id == user_id,
             Cart.status == ACTIVE_STATUS,
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
-    async def get_cart_by_session_token(self, session_token: UUID) -> Cart | None:
+    async def get_cart_by_session_token(
+        self, session_token: UUID, *, for_update: bool = False
+    ) -> Cart | None:
         """Return the active (``draft``) guest cart for a session token, if any.
 
         Args:
             session_token: Guest cookie token.
+            for_update: Take a ``FOR UPDATE`` lock on the cart row (see
+                :meth:`get_cart_by_user`).
 
         Returns:
             Cart | None: The guest's active cart, or ``None``.
@@ -71,6 +82,8 @@ class CartRepository:
             Cart.session_token == session_token,
             Cart.status == ACTIVE_STATUS,
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def create_cart(

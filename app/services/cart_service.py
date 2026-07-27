@@ -58,37 +58,47 @@ class CartService:
         self,
         user_id: int | None,
         session_token: UUID | None,
+        *,
+        for_update: bool = False,
     ) -> Cart | None:
         """Resolve the active cart for a user or a guest without creating one.
 
         Args:
             user_id: Owning user id, or ``None`` for a guest.
             session_token: Guest cookie token, or ``None`` for a user.
+            for_update: Lock the cart row so concurrent writes to the same cart
+                serialize (write paths pass ``True``; reads leave it ``False``).
 
         Returns:
             Cart | None: The active cart, or ``None`` if none exists yet.
         """
         if user_id is not None:
-            return await self.repo.get_cart_by_user(user_id)
+            return await self.repo.get_cart_by_user(user_id, for_update=for_update)
         if session_token is not None:
-            return await self.repo.get_cart_by_session_token(session_token)
+            return await self.repo.get_cart_by_session_token(
+                session_token, for_update=for_update
+            )
         return None
 
     async def _get_or_create_cart(
         self,
         user_id: int | None,
         session_token: UUID | None,
+        *,
+        for_update: bool = False,
     ) -> Cart:
         """Resolve the active cart, creating one for the caller if absent.
 
         Args:
             user_id: Owning user id, or ``None`` for a guest.
             session_token: Guest cookie token, or ``None`` for a user.
+            for_update: Lock an existing cart row (a freshly created cart needs no
+                lock — this transaction owns it until commit).
 
         Returns:
             Cart: The existing or freshly created active cart.
         """
-        cart = await self._get_cart(user_id, session_token)
+        cart = await self._get_cart(user_id, session_token, for_update=for_update)
         if cart is not None:
             return cart
         owner_user_id = user_id
@@ -207,7 +217,7 @@ class CartService:
                 mismatched, or a required/forbidden variant rule is violated.
         """
         product, variant = await self._resolve_purchasable(product_id, variant_id)
-        cart = await self._get_or_create_cart(user_id, session_token)
+        cart = await self._get_or_create_cart(user_id, session_token, for_update=True)
         await self.repo.add_or_increment_item(
             cart.id, product.id, qty, variant.id if variant is not None else None
         )
@@ -240,7 +250,7 @@ class CartService:
         Raises:
             ItemNotFoundError: If the cart or line does not exist.
         """
-        cart = await self._get_cart(user_id, session_token)
+        cart = await self._get_cart(user_id, session_token, for_update=True)
         if cart is None:
             raise ItemNotFoundError("Cart is empty")
         updated = await self.repo.set_item_qty(cart.id, product_id, qty, variant_id)
@@ -273,7 +283,7 @@ class CartService:
         Raises:
             ItemNotFoundError: If the cart or line does not exist.
         """
-        cart = await self._get_cart(user_id, session_token)
+        cart = await self._get_cart(user_id, session_token, for_update=True)
         if cart is None:
             raise ItemNotFoundError("Cart is empty")
         removed = await self.repo.delete_item(cart.id, product_id, variant_id)
@@ -307,17 +317,24 @@ class CartService:
         Returns:
             CartOut: The re-rendered user cart.
         """
+        # Lock the user cart row FIRST, then read the guest cart: concurrent
+        # writes to the user cart (add/update/remove) serialize on this lock, so
+        # the in-memory ``qty +=`` below cannot lose an update; and a duplicate
+        # merge blocks here, then finds the guest cart already deleted → no-op.
+        user_cart = await self._get_or_create_cart(user_id, None, for_update=True)
         guest_cart = await self.repo.get_cart_by_session_token(session_token)
-        user_cart = await self._get_or_create_cart(user_id, None)
         if guest_cart is None or guest_cart.id == user_cart.id:
             rendered = await self._render(user_cart.id, lang)
             await self.session.commit()
             return rendered
 
+        # Load the user cart's lines once and match in memory (no per-line query).
+        user_lines = {
+            (line.product_id, line.variant_id): line
+            for line in await self.repo.list_raw_items(user_cart.id)
+        }
         for guest_line in await self.repo.list_raw_items(guest_cart.id):
-            target = await self.repo.get_item(
-                user_cart.id, guest_line.product_id, guest_line.variant_id
-            )
+            target = user_lines.get((guest_line.product_id, guest_line.variant_id))
             if target is not None:
                 target.qty += guest_line.qty
                 await self.repo.delete_item(
