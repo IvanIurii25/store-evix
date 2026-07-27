@@ -109,6 +109,7 @@ class PromoService:
         subtotal: Decimal,
         *,
         now: datetime | None = None,
+        lock: bool = False,
     ) -> tuple[PromoCode, Decimal]:
         """Validate a code against a subtotal and return ``(promo, discount)``.
 
@@ -120,6 +121,10 @@ class PromoService:
             subtotal: The cart subtotal the discount applies to.
             now: Reference instant for the validity window (defaults to UTC now;
                 injectable for deterministic tests).
+            lock: When ``True`` (checkout) and the code is usage-limited, take a
+                ``FOR UPDATE`` lock on the promo row before counting redemptions
+                so concurrent checkouts of the same code cannot overshoot the
+                limit. ``quote`` leaves it ``False`` (read-only preview, no lock).
 
         Returns:
             tuple[PromoCode, Decimal]: The validated promo row and the discount
@@ -145,6 +150,10 @@ class PromoService:
             )
 
         if promo.usage_limit is not None:
+            # Serialize redeemers of this code before counting (checkout only);
+            # the lock is held until the checkout commits its order.
+            if lock:
+                await self.repo.lock_by_code(promo.code)
             used = await self.repo.count_orders_using(promo.code)
             if used >= promo.usage_limit:
                 raise PromoUsageLimitError("Promo code usage limit reached")

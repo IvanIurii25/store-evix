@@ -74,6 +74,22 @@ class PromoRepository:
         stmt = select(func.count()).where(Order.promo_code == code)
         return int((await self.session.scalar(stmt)) or 0)
 
+    async def lock_by_code(self, code: str) -> None:
+        """Take a ``FOR UPDATE`` lock on the promo row to serialize redemptions.
+
+        The usage counter is derived by counting orders (:meth:`count_orders_using`),
+        so there is no row to lock on the count itself: concurrent checkouts would
+        all read the same pre-insert count and overshoot ``usage_limit``. Locking
+        the ``promo_code`` row before the count turns it into a per-code mutex —
+        the second redeemer of the same code blocks until the first commits its
+        order, then counts the now-visible row. Held until the checkout commits.
+
+        Args:
+            code: The coupon code being redeemed.
+        """
+        stmt = select(PromoCode.id).where(PromoCode.code == code).with_for_update()
+        await self.session.execute(stmt)
+
     def add(self, promo: PromoCode) -> PromoCode:
         """Stage a new promo row (not yet flushed).
 

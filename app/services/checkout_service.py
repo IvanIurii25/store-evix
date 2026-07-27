@@ -256,8 +256,9 @@ class CheckoutService:
         )
         # Re-validate the coupon server-side: the discount is recomputed, never
         # taken from the client. A promo that expired between quote and checkout
-        # raises here and no order is created.
-        discount_total = await self._resolve_discount(lines, promo_code)
+        # raises here and no order is created. ``lock=True`` serializes concurrent
+        # redemptions of a usage-limited code so the limit cannot be overshot.
+        discount_total = await self._resolve_discount(lines, promo_code, lock=True)
         totals = self._quote_from_lines(
             lines,
             delivery_type,
@@ -693,6 +694,8 @@ class CheckoutService:
         self,
         lines: list[_PricedLine],
         promo_code: str | None,
+        *,
+        lock: bool = False,
     ) -> Decimal:
         """Validate the coupon (if any) and return the discount for the subtotal.
 
@@ -702,6 +705,9 @@ class CheckoutService:
         Args:
             lines: Resolved, stock-checked cart lines (source of the subtotal).
             promo_code: Optional coupon code.
+            lock: Passed to the promo service to lock a usage-limited code for the
+                duration of the checkout transaction (``True`` from
+                :meth:`checkout`, ``False`` from :meth:`quote`).
 
         Returns:
             Decimal: The discount amount (``0`` when no code is supplied).
@@ -714,7 +720,7 @@ class CheckoutService:
             return _ZERO
         subtotal = sum((line.line_total for line in lines), _ZERO)
         _promo, discount = await self.promo_service.validate_and_compute(
-            promo_code, subtotal
+            promo_code, subtotal, lock=lock
         )
         return discount
 
