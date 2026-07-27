@@ -184,7 +184,9 @@ class PaymentService:
             )
             return True
 
-        order = await self.order_repo.get_order_by_id(payment.order_id)
+        order = await self.order_repo.get_order_by_id(
+            payment.order_id, for_update=True
+        )
         if order is None:  # pragma: no cover - FK guarantees the order exists
             logger.error("maib callback: order %s vanished", payment.order_id)
             return False

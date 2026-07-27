@@ -131,7 +131,7 @@ class AdminOrderService:
             IllegalTransitionError: If a requested move is not allowed (from the
                 reused state machine).
         """
-        order = await self._require_order(number)
+        order = await self._require_order(number, for_update=True)
         await self.state_machine.transition(
             order,
             to_status=to_status,
@@ -141,11 +141,13 @@ class AdminOrderService:
         items = (await self.order_repo.list_items_for_orders([order.id]))[order.id]
         return order, items
 
-    async def _require_order(self, number: str) -> Order:
+    async def _require_order(self, number: str, *, for_update: bool = False) -> Order:
         """Load an order by number or raise :class:`OrderNotFoundError`.
 
         Args:
             number: The order number.
+            for_update: Lock the row for a concurrent-safe transition (§8); reads
+                (order detail) leave it ``False``.
 
         Returns:
             Order: The found order.
@@ -153,7 +155,7 @@ class AdminOrderService:
         Raises:
             OrderNotFoundError: If no order has that number.
         """
-        order = await self.order_repo.get_order_by_number(number)
+        order = await self.order_repo.get_order_by_number(number, for_update=for_update)
         if order is None:
             raise OrderNotFoundError(f"Order not found: {number}")
         return order

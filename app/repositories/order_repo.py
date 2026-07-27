@@ -423,28 +423,41 @@ class OrderRepository:
     # service pairs each order with its lines. This keeps model definitions
     # untouched while still avoiding a per-order N+1 on the list endpoint.
     # ------------------------------------------------------------------ #
-    async def get_order_by_number(self, number: str) -> Order | None:
+    async def get_order_by_number(
+        self, number: str, *, for_update: bool = False
+    ) -> Order | None:
         """Load an order by its human-readable number.
 
         Args:
             number: Order number.
+            for_update: Take a row-level ``FOR UPDATE`` lock so a concurrent
+                transition serializes behind this one (§8). Only the write paths
+                (transition/refund) pass ``True``; reads leave it ``False``.
 
         Returns:
             Order | None: The order, or ``None``.
         """
         stmt = select(Order).where(Order.number == number)
+        if for_update:
+            stmt = stmt.with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
-    async def get_order_by_id(self, order_id: int) -> Order | None:
+    async def get_order_by_id(
+        self, order_id: int, *, for_update: bool = False
+    ) -> Order | None:
         """Load an order by its primary key.
 
         Args:
             order_id: Order primary key.
+            for_update: Take a row-level ``FOR UPDATE`` lock so a concurrent
+                transition serializes behind this one (§8).
 
         Returns:
             Order | None: The order, or ``None``.
         """
         stmt = select(Order).where(Order.id == order_id)
+        if for_update:
+            stmt = stmt.with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def list_orders_for_user(self, user_id: int) -> list[Order]:
