@@ -8,8 +8,6 @@ hydration, fallback decision) stay in :class:`app.services.search_service`.
 
 import logging
 
-from elasticsearch import ApiError, TransportError
-
 from app.core.config import settings
 from app.search.es.client import get_es_client
 from app.search.es.index import LANGS
@@ -36,13 +34,6 @@ class EsSearchResult:
 
 class EsSearchBackend:
     """Execute one search request against Elasticsearch."""
-
-    async def health(self) -> bool:
-        """Cheap liveness probe — used to decide ES vs Postgres fallback."""
-        try:
-            return bool(await get_es_client().ping())
-        except (ApiError, TransportError, OSError):
-            return False
 
     async def search(
         self,

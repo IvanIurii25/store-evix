@@ -6,7 +6,7 @@ Modules:
 * :mod:`app.search.es.client` — async ES client singleton.
 * :mod:`app.search.es.indexer` — build ES documents from ORM + (re)index/delete.
 * :mod:`app.search.es.query` — the ``function_score(bool)`` query builder.
-* :mod:`app.search.es.backend` — ``EsSearchBackend`` (rank ids + suggest + health).
+* :mod:`app.search.es.backend` — ``EsSearchBackend`` (rank ids + suggest).
 
 Design deltas vs the ecom-elastic V3 source (see search-elastic-plan.md §4):
 single-tenant (no ``group_id``), languages ru/ro only, no external HTTP feed
