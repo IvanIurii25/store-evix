@@ -213,6 +213,7 @@ async def add_product(db_session: AsyncSession) -> Callable:
 # Real-commit harness for the last-unit race (opts out of SAVEPOINT isolation)
 # --------------------------------------------------------------------------- #
 _RACE_TABLES: tuple[str, ...] = (
+    "payment",
     '"order_status_history"',
     '"order_item"',
     '"order"',

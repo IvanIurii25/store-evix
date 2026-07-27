@@ -227,7 +227,10 @@ async def refund_order(
     """
     admin_service = AdminOrderService(session)
     try:
-        order, _ = await admin_service.get_order(number)
+        # Lock the order for the whole refund (guard + maib call + transition) so
+        # a concurrent refund of the same order blocks, then re-reads the
+        # now-refunded status and is rejected before it can call maib again.
+        order, _ = await admin_service.get_order(number, for_update=True)
     except OrderNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

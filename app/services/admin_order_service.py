@@ -85,11 +85,16 @@ class AdminOrderService:
         pairs = [(order, items_by_order[order.id]) for order in orders]
         return pairs, total
 
-    async def get_order(self, number: str) -> tuple[Order, list[OrderItem]]:
+    async def get_order(
+        self, number: str, *, for_update: bool = False
+    ) -> tuple[Order, list[OrderItem]]:
         """Return one order and its lines by number, or raise 404.
 
         Args:
             number: The human-readable order number.
+            for_update: Lock the order row so a write that follows this read
+                (e.g. refund) serializes against a concurrent one. Plain detail
+                reads leave it ``False``.
 
         Returns:
             tuple: ``(order, items)``.
@@ -97,7 +102,7 @@ class AdminOrderService:
         Raises:
             OrderNotFoundError: If no order has that number.
         """
-        order = await self._require_order(number)
+        order = await self._require_order(number, for_update=for_update)
         items = (await self.order_repo.list_items_for_orders([order.id]))[order.id]
         return order, items
 
