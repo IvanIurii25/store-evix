@@ -14,19 +14,22 @@ the domain rules:
 
 Telegram sending is injected (:mod:`app.core.telegram` by default) so tests can
 pass a stub exposing ``send_message``. The service commits its own writes (the
-session dependency does not auto-commit). No HTTP knowledge: the router maps the
-raised exceptions.
+session dependency does not auto-commit). No HTTP knowledge: the raised
+:class:`SupportError` subclasses carry their own ``status_code``/``code`` and are
+rendered by the centralized :class:`~app.core.errors.DomainError` handler.
 """
 
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from fastapi import status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.core.telegram as telegram_client
 from app.core.config import settings
+from app.core.errors import DomainError
 from app.core.storage import get_storage
 from app.core.support_events import publish_support_event
 from app.core.telegram import InboundMessage
@@ -44,8 +47,8 @@ from app.schemas.support import CannedIn
 logger = logging.getLogger(__name__)
 
 
-class SupportError(Exception):
-    """Base class for support domain errors (mapped to HTTP by the router)."""
+class SupportError(DomainError):
+    """Base class for support domain errors (rendered by the unified handler)."""
 
     code: str = "support_error"
 
@@ -53,18 +56,21 @@ class SupportError(Exception):
 class ConversationNotFoundError(SupportError):
     """The referenced conversation does not exist."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class CannedNotFoundError(SupportError):
     """The referenced canned response does not exist."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class OrderNotFoundError(SupportError):
     """The order referenced for linking does not exist."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "order_not_found"
 
 
@@ -472,7 +478,7 @@ class SupportService:
         """
         order = await OrderRepository(self.session).get_order_by_number(order_number)
         if order is None:
-            raise OrderNotFoundError(f"Order {order_number} not found")
+            raise OrderNotFoundError("Заказ не найден")
         conv = await self.repo.set_linked_order(conversation_id, order.id)
         if conv is None:
             raise ConversationNotFoundError(f"Conversation {conversation_id} not found")

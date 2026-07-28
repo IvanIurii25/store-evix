@@ -7,7 +7,7 @@ read-only: it returns only the six non-sensitive SEO fields — no staff, no PII
 so an unauthenticated SSR render can fetch them. Writes stay admin-only.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,10 +16,7 @@ from app.schemas.admin_settings import SeoSettings
 from app.schemas.content_page import ContentPageDetail, ContentPageListItem
 from app.schemas.payment import SiteConfigOut
 from app.services.admin_settings_service import SettingsService
-from app.services.content_page_service import (
-    ContentPageNotFoundError,
-    ContentPageService,
-)
+from app.services.content_page_service import ContentPageService
 
 # Default storefront language when the ``lang`` query param is omitted.
 _DEFAULT_LANG: str = "ro"
@@ -89,12 +86,7 @@ async def get_content_page(
         ContentPageDetail: The rendered page.
 
     Raises:
-        HTTPException: 404 if the page is not published or the language is absent.
+        ContentPageNotFoundError: 404 ``not_found`` if the page is not published
+            or the language is absent (rendered by the unified handler).
     """
-    try:
-        return await ContentPageService(session).get_page(slug, lang)
-    except ContentPageNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": str(exc)},
-        ) from exc
+    return await ContentPageService(session).get_page(slug, lang)

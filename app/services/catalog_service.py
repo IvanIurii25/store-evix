@@ -17,9 +17,11 @@ import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.errors import DomainError
 from app.models.catalog import ALLOWED_LANGS, ProductCard
 from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.review_repo import ReviewRepository
@@ -56,20 +58,29 @@ _RELATED_MAX_CANDIDATES: int = 50
 PRICE_SORTS: frozenset[str] = frozenset({"price_asc", "price_desc"})
 
 
-class CatalogError(Exception):
-    """Base class for catalog domain errors (mapped to HTTP by the router)."""
+class CatalogError(DomainError):
+    """Base class for catalog domain errors (rendered by the global handler)."""
 
 
 class NotFoundError(CatalogError):
     """A requested catalog resource does not exist / is not published."""
 
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "not_found"
+
 
 class PublicationError(CatalogError):
     """A product cannot be published: the both-languages rule is unmet (§2.1.1)."""
 
+    status_code = status.HTTP_409_CONFLICT
+    code = "not_publishable"
+
 
 class InvalidCursorError(CatalogError):
     """The supplied listing cursor is malformed."""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "invalid_cursor"
 
 
 def _encode_cursor(sort: str, product_id: int, price: Decimal | None) -> str:

@@ -9,12 +9,15 @@ Two small, focused services bound to one session:
   and (de)activate / toggle the ``is_staff`` flag. A guard refuses to remove the
   last active staff account so the back office can never lock itself out.
 
-No HTTP knowledge here — the router maps the raised domain errors to status
-codes. Domain errors carry a ``code`` used by the unified error envelope.
+No HTTP knowledge here — the domain errors below subclass
+:class:`~app.core.errors.DomainError`, carrying the ``status_code`` and ``code``
+the unified error envelope renders; the router just lets them propagate.
 """
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import DomainError
 from app.core.security import hash_password
 from app.models.user import AppUser
 from app.repositories.admin_staff_repo import AdminStaffRepository
@@ -37,21 +40,23 @@ def _seo_key(field: str) -> str:
     return f"seo.{field}"
 
 
-class SettingsError(Exception):
-    """Base class for settings domain errors (mapped to HTTP by the router)."""
+class SettingsError(DomainError):
+    """Base class for settings domain errors (rendered via the unified envelope)."""
 
     code: str = "settings_error"
 
 
 class StaffNotFoundError(SettingsError):
-    """The referenced staff user does not exist (mapped to 404)."""
+    """The referenced staff user does not exist (404)."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class StaffConflictError(SettingsError):
-    """A staff write violates an invariant (duplicate / last-staff, mapped 409)."""
+    """A staff write violates an invariant (duplicate / last-staff, 409)."""
 
+    status_code = status.HTTP_409_CONFLICT
     code = "conflict"
 
 

@@ -2,14 +2,14 @@
 
 Thin router: it validates input, resolves the language, delegates to
 :class:`~app.services.search_service.SearchService`, and serializes the result.
-No business logic and no SQL live here. Domain errors from the service are mapped
-to HTTP status codes (the app's HTTPException handler renders the unified
-``{error:{code,message,details?}}`` envelope).
+No business logic and no SQL live here. Domain errors raised by the service
+subclass :class:`~app.core.errors.DomainError` and are rendered by the app's
+registered handler into the unified ``{error:{code,message,details?}}`` envelope.
 
 Mounted without the ``/api/v1`` prefix — the integrator adds it.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import get_lang
@@ -18,7 +18,6 @@ from app.schemas.search import FacetsResponse, SearchResponse
 from app.services.search_service import (
     DEFAULT_SEARCH_PAGE_SIZE,
     MAX_SEARCH_PAGE_SIZE,
-    NotFoundError,
     SearchService,
 )
 
@@ -75,12 +74,8 @@ async def category_facets(
         FacetsResponse: Attribute values + counts + price bounds for the subtree.
 
     Raises:
-        HTTPException: 404 if the category is unknown in the language.
+        NotFoundError: 404 if the category is unknown in the language (rendered
+            by the unified :class:`~app.core.errors.DomainError` handler).
     """
     service = SearchService(session)
-    try:
-        return await service.facets(category_slug=slug, lang=lang)
-    except NotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    return await service.facets(category_slug=slug, lang=lang)

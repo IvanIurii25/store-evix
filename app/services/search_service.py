@@ -9,9 +9,11 @@ this service knows nothing about HTTP and raises domain errors the router maps.
 
 import logging
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.errors import DomainError
 from app.repositories.search_repo import SearchRepository
 from app.schemas.catalog import ProductCardOut
 from app.schemas.search import (
@@ -29,12 +31,15 @@ DEFAULT_SEARCH_PAGE_SIZE: int = 24
 MAX_SEARCH_PAGE_SIZE: int = 100
 
 
-class SearchError(Exception):
-    """Base class for search domain errors (mapped to HTTP by the router)."""
+class SearchError(DomainError):
+    """Base class for search domain errors (rendered by the unified handler)."""
 
 
 class NotFoundError(SearchError):
     """A referenced resource (e.g. a category slug) does not exist / is hidden."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "not_found"
 
 
 class SearchService:

@@ -2,11 +2,12 @@
 
 Thin back-office router, entirely behind ``Depends(current_staff)`` (JWT +
 ``is_staff``; a non-staff caller gets 403 from the dependency). It delegates to
-:class:`~app.services.admin_order_service.AdminOrderService`, serializes results
-into the shared :class:`~app.schemas.order.OrderOut`, and maps domain errors to
-HTTP status codes (the app's HTTPException handler renders the unified
-``{error:{code,message,details?}}`` envelope). No business logic and no SQL live
-here.
+:class:`~app.services.admin_order_service.AdminOrderService` and serializes results
+into the shared :class:`~app.schemas.order.OrderOut`. Domain errors raised by the
+services subclass :class:`~app.core.errors.DomainError` and are rendered into the
+unified ``{error:{code,message,details?}}`` envelope by the registered handler; only
+the maib gateway failure (not a ``DomainError``) is mapped here, to 502. No business
+logic and no SQL live here.
 
 Endpoints (paths carry ``/admin``; the ``/api/v1`` prefix is added by the
 integrator when mounting):
@@ -26,14 +27,9 @@ from app.models.order import Order, OrderItem
 from app.models.user import AppUser
 from app.schemas.admin_orders import AdminOrderList, TransitionRequest
 from app.schemas.order import OrderItemOut, OrderOut
-from app.services.admin_order_service import AdminOrderService, OrderNotFoundError
-from app.services.order_service import IllegalTransitionError
+from app.services.admin_order_service import AdminOrderService
 from app.services.payment.maib_client import MaibError
-from app.services.payment.payment_service import (
-    PaymentNotFoundError,
-    PaymentService,
-    RefundNotAllowedError,
-)
+from app.services.payment.payment_service import PaymentService
 
 router = APIRouter(
     prefix="/admin/orders",
@@ -145,13 +141,7 @@ async def get_order(
         HTTPException: 404 if no order has that number.
     """
     service = AdminOrderService(session)
-    try:
-        order, items = await service.get_order(number)
-    except OrderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "order_not_found", "message": str(exc)},
-        ) from exc
+    order, items = await service.get_order(number)
     return _to_out(order, items)
 
 
@@ -181,23 +171,12 @@ async def transition_order(
         HTTPException: 404 if the order is unknown; 409 for an illegal move.
     """
     service = AdminOrderService(session)
-    try:
-        order, items = await service.transition(
-            number,
-            to_status=data.to_status,
-            to_payment_status=data.to_payment_status,
-            changed_by=f"admin:{staff.id}",
-        )
-    except OrderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "order_not_found", "message": str(exc)},
-        ) from exc
-    except IllegalTransitionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "illegal_transition", "message": str(exc)},
-        ) from exc
+    order, items = await service.transition(
+        number,
+        to_status=data.to_status,
+        to_payment_status=data.to_payment_status,
+        changed_by=f"admin:{staff.id}",
+    )
     return _to_out(order, items)
 
 
@@ -226,30 +205,18 @@ async def refund_order(
             not a paid card order; 502 if the maib refund call fails.
     """
     admin_service = AdminOrderService(session)
-    try:
-        # Lock the order for the whole refund (guard + maib call + transition) so
-        # a concurrent refund of the same order blocks, then re-reads the
-        # now-refunded status and is rejected before it can call maib again.
-        order, _ = await admin_service.get_order(number, for_update=True)
-    except OrderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "order_not_found", "message": str(exc)},
-        ) from exc
+    # Lock the order for the whole refund (guard + maib call + transition) so a
+    # concurrent refund of the same order blocks, then re-reads the now-refunded
+    # status and is rejected before it can call maib again. An unknown order
+    # surfaces as an ``OrderNotFoundError`` (404) domain error.
+    order, _ = await admin_service.get_order(number, for_update=True)
 
     payment_service = PaymentService(session)
+    # ``RefundNotAllowedError`` (409) / ``PaymentNotFoundError`` (404) are domain
+    # errors rendered by the unified handler; only the gateway failure is mapped
+    # here (maib is not a ``DomainError``).
     try:
         await payment_service.refund(order)
-    except RefundNotAllowedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "refund_not_allowed", "message": str(exc)},
-        ) from exc
-    except PaymentNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "payment_not_found", "message": str(exc)},
-        ) from exc
     except MaibError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

@@ -14,7 +14,7 @@ No business logic and no SQL live here. Mounted without the ``/api/v1`` prefix �
 the integrator adds it.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user
@@ -25,12 +25,7 @@ from app.schemas.restock import (
     RestockSubscribeIn,
     RestockSubscriptionItem,
 )
-from app.services.restock_service import (
-    ProductInStockError,
-    RestockNotFoundError,
-    RestockService,
-    RestockUnsupportedError,
-)
+from app.services.restock_service import RestockService
 
 # Default storefront language when the ``lang`` query param is omitted.
 _DEFAULT_LANG: str = "ro"
@@ -62,26 +57,14 @@ async def subscribe(
         RestockSubscribedOut: ``{subscribed: true}``.
 
     Raises:
-        HTTPException: 404 if the product is missing; 400 if it is in stock or
-            variable (restock unsupported for variable products in v1).
+        RestockNotFoundError: 404 if the product is missing.
+        ProductInStockError: 400 if the product is currently in stock.
+        RestockUnsupportedError: 400 if the product is variable (restock
+            unsupported for variable products in v1). Each carries its own
+            status/code, rendered by the unified
+            :class:`~app.core.errors.DomainError` handler.
     """
-    try:
-        await service.subscribe(payload.product_id, user.id, payload.lang)
-    except RestockNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": str(exc)},
-        ) from exc
-    except RestockUnsupportedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "unsupported", "message": str(exc)},
-        ) from exc
-    except ProductInStockError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "in_stock", "message": "товар в наличии"},
-        ) from exc
+    await service.subscribe(payload.product_id, user.id, payload.lang)
     return RestockSubscribedOut(subscribed=True)
 
 

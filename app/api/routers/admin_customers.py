@@ -3,8 +3,9 @@
 Thin back-office router behind ``Depends(current_staff)`` (JWT + ``is_staff`` →
 403 for non-staff). It delegates to
 :class:`~app.services.admin_customer_service.AdminCustomerService`, assembles the
-response schemas, and maps the not-found domain error to 404. No business logic
-and no SQL live here.
+response schemas. The service raises :class:`CustomerNotFoundError` (a
+``DomainError`` rendered as 404 ``not_found`` by the registered handler); no
+error mapping, business logic, or SQL lives here.
 
 Endpoints (the ``/api/v1`` prefix is added by the integrator when mounting):
 
@@ -14,7 +15,7 @@ Endpoints (the ``/api/v1`` prefix is added by the integrator when mounting):
   history + stats.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
@@ -31,7 +32,6 @@ from app.schemas.admin_customers import (
 from app.services.admin_customer_service import (
     AdminCustomerService,
     CustomerDetailData,
-    CustomerNotFoundError,
 )
 
 router = APIRouter(
@@ -104,13 +104,12 @@ async def get_customer(
     _staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
 ) -> CustomerDetail:
-    """Return one customer's full profile, addresses, orders and stats (§6.2)."""
+    """Return one customer's full profile, addresses, orders and stats (§6.2).
+
+    An unknown ``user_id`` makes the service raise
+    :class:`~app.services.admin_customer_service.CustomerNotFoundError`, which the
+    registered domain-error handler renders as 404 ``not_found``.
+    """
     service = AdminCustomerService(session)
-    try:
-        data = await service.get_customer(user_id)
-    except CustomerNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": str(exc)},
-        ) from exc
+    data = await service.get_customer(user_id)
     return _to_detail(data)

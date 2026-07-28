@@ -2,9 +2,11 @@
 
 Narrow, explicit back-office endpoints (no generic CRUD engine, §10). Every
 route is gated by :func:`~app.api.deps.current_staff` (``is_staff`` → 403 for
-non-staff). The router stays thin: it validates input via Pydantic, delegates to
-:class:`~app.services.admin_catalog_service.AdminCatalogService`, and maps the
-domain exceptions to the unified error envelope via :class:`HTTPException`.
+non-staff). The router stays thin: it validates input via Pydantic and delegates
+to :class:`~app.services.admin_catalog_service.AdminCatalogService`. Domain errors
+raised by the service subclass :class:`~app.core.errors.DomainError`; the global
+handler renders them into the unified error envelope with each error's own status
+code, so the router no longer catches or maps them.
 
 Prefix is ``/admin`` (the integrator mounts the router; no ``/api/v1`` here).
 """
@@ -57,14 +59,7 @@ from app.schemas.admin_catalog import (
     VariationAttributesRequest,
 )
 from app.schemas.restock import DemandItem, RestockWaitersOut
-from app.services.admin_catalog_service import (
-    AdminCatalogService,
-    AdminConflictError,
-    AdminNotFoundError,
-    AdminValidationError,
-)
-from app.services.catalog_service import NotFoundError as CatalogNotFoundError
-from app.services.catalog_service import PublicationError
+from app.services.admin_catalog_service import AdminCatalogService
 from app.services.restock_service import RestockService
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
@@ -75,32 +70,6 @@ def get_admin_catalog_service(
 ) -> AdminCatalogService:
     """Construct the admin-catalog service bound to the request session."""
     return AdminCatalogService(session=session)
-
-
-def _raise_http(exc: Exception) -> None:
-    """Translate a domain exception into an :class:`HTTPException`.
-
-    Args:
-        exc: The domain exception raised by the service layer.
-
-    Raises:
-        HTTPException: With a status code and ``{code, message}`` detail that the
-            global handler unpacks into the unified error envelope.
-    """
-    if isinstance(exc, (AdminNotFoundError, CatalogNotFoundError)):
-        code, http_status = "not_found", status.HTTP_404_NOT_FOUND
-    elif isinstance(exc, AdminConflictError):
-        code, http_status = "conflict", status.HTTP_409_CONFLICT
-    elif isinstance(exc, PublicationError):
-        code, http_status = "not_publishable", status.HTTP_409_CONFLICT
-    elif isinstance(exc, AdminValidationError):
-        code, http_status = "invalid", status.HTTP_400_BAD_REQUEST
-    else:
-        raise exc
-    raise HTTPException(
-        status_code=http_status,
-        detail={"code": code, "message": str(exc)},
-    ) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -245,10 +214,7 @@ async def create_category(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> CategoryOut:
     """Create a category with its initial translations."""
-    try:
-        category = await service.create_category(payload)
-    except (AdminNotFoundError, CatalogNotFoundError) as exc:
-        _raise_http(exc)
+    category = await service.create_category(payload)
     return await _build_category_out(service, category)
 
 
@@ -260,10 +226,7 @@ async def update_category(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> CategoryOut:
     """Update a category's structural fields."""
-    try:
-        category = await service.update_category(category_id, payload)
-    except (AdminNotFoundError, AdminValidationError, CatalogNotFoundError) as exc:
-        _raise_http(exc)
+    category = await service.update_category(category_id, payload)
     return await _build_category_out(service, category)
 
 
@@ -274,10 +237,7 @@ async def delete_category(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Delete an empty category (no children / products)."""
-    try:
-        await service.delete_category(category_id)
-    except (AdminNotFoundError, AdminConflictError) as exc:
-        _raise_http(exc)
+    await service.delete_category(category_id)
 
 
 @router.put(
@@ -291,10 +251,7 @@ async def set_category_translation(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> CategoryTranslationOut:
     """Upsert one language translation of a category."""
-    try:
-        translation = await service.set_category_translation(category_id, payload)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    translation = await service.set_category_translation(category_id, payload)
     return CategoryTranslationOut.model_validate(translation)
 
 
@@ -305,10 +262,7 @@ async def reorder_categories(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Assign new ``position`` values to a set of sibling categories."""
-    try:
-        await service.reorder_categories(payload.items)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    await service.reorder_categories(payload.items)
 
 
 @router.post("/categories/{category_id}/move", response_model=CategoryOut)
@@ -319,10 +273,7 @@ async def move_category(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> CategoryOut:
     """Re-parent a category and recompute ``path``/``depth`` for its subtree."""
-    try:
-        category = await service.move_category(category_id, payload.parent_id)
-    except (AdminNotFoundError, AdminValidationError) as exc:
-        _raise_http(exc)
+    category = await service.move_category(category_id, payload.parent_id)
     return await _build_category_out(service, category)
 
 
@@ -382,10 +333,7 @@ async def create_product(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> ProductOut:
     """Create a product with its initial translations."""
-    try:
-        product = await service.create_product(payload)
-    except (AdminNotFoundError, CatalogNotFoundError, PublicationError) as exc:
-        _raise_http(exc)
+    product = await service.create_product(payload)
     return await _build_product_out(service, product)
 
 
@@ -396,10 +344,7 @@ async def get_product(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> ProductOut:
     """Return one product's full admin view (structure + translations + media)."""
-    try:
-        product = await service._get_product(product_id)  # noqa: SLF001
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    product = await service._get_product(product_id)  # noqa: SLF001
     return await _build_product_out(service, product)
 
 
@@ -441,10 +386,7 @@ async def update_product(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> ProductOut:
     """Update a product; activation enforces the both-languages rule (§2.1.1)."""
-    try:
-        product = await service.update_product(product_id, payload)
-    except (AdminNotFoundError, CatalogNotFoundError, PublicationError) as exc:
-        _raise_http(exc)
+    product = await service.update_product(product_id, payload)
     return await _build_product_out(service, product)
 
 
@@ -455,10 +397,7 @@ async def delete_product(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Delete a product with its translations, media, attributes and cards."""
-    try:
-        await service.delete_product(product_id)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    await service.delete_product(product_id)
 
 
 @router.put(
@@ -472,10 +411,7 @@ async def set_product_translation(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> ProductTranslationOut:
     """Upsert one language translation of a product and rebuild the card."""
-    try:
-        translation = await service.set_product_translation(product_id, payload)
-    except (AdminNotFoundError, CatalogNotFoundError, PublicationError) as exc:
-        _raise_http(exc)
+    translation = await service.set_product_translation(product_id, payload)
     return ProductTranslationOut.model_validate(translation)
 
 
@@ -487,11 +423,8 @@ async def set_product_attributes(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> ProductOut:
     """Replace a product's attribute-value links with the given set."""
-    try:
-        await service.set_product_attributes(product_id, payload.value_ids)
-        product = await service._get_product(product_id)  # noqa: SLF001
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    await service.set_product_attributes(product_id, payload.value_ids)
+    product = await service._get_product(product_id)  # noqa: SLF001
     return await _build_product_out(service, product)
 
 
@@ -507,10 +440,7 @@ async def upload_product_media(
     file: UploadFile = File(...),
 ) -> MediaAdminOut:
     """Store an uploaded image and record its :class:`Media` row."""
-    try:
-        media = await service.add_product_media(product_id, file)
-    except (AdminNotFoundError, AdminValidationError) as exc:
-        _raise_http(exc)
+    media = await service.add_product_media(product_id, file)
     return MediaAdminOut.model_validate(media)
 
 
@@ -560,10 +490,7 @@ async def reorder_product_media(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> MediaListOut:
     """Set the display order of a product's images (first id = main image)."""
-    try:
-        media = await service.reorder_product_media(product_id, payload.ordered_ids)
-    except (AdminNotFoundError, AdminValidationError) as exc:
-        _raise_http(exc)
+    media = await service.reorder_product_media(product_id, payload.ordered_ids)
     return MediaListOut(data=[MediaAdminOut.model_validate(row) for row in media])
 
 
@@ -578,10 +505,7 @@ async def delete_product_media(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Remove one image from a product (DB row + best-effort stored object)."""
-    try:
-        await service.delete_product_media(product_id, media_id)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    await service.delete_product_media(product_id, media_id)
 
 
 @router.put(
@@ -596,12 +520,9 @@ async def bind_media_to_variant(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> MediaAdminOut:
     """Bind one image to a variant (or unbind to the shared gallery)."""
-    try:
-        media = await service.bind_media_to_variant(
-            product_id, media_id, payload.variant_id
-        )
-    except (AdminNotFoundError, PublicationError) as exc:
-        _raise_http(exc)
+    media = await service.bind_media_to_variant(
+        product_id, media_id, payload.variant_id
+    )
     return MediaAdminOut.model_validate(media)
 
 
@@ -649,11 +570,8 @@ async def set_variation_attributes(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> ProductOut:
     """Set (ordered) which attributes are the product's variation selectors."""
-    try:
-        await service.set_variation_attributes(product_id, payload.attribute_ids)
-        product = await service._get_product(product_id)  # noqa: SLF001
-    except (AdminNotFoundError, AdminValidationError, PublicationError) as exc:
-        _raise_http(exc)
+    await service.set_variation_attributes(product_id, payload.attribute_ids)
+    product = await service._get_product(product_id)  # noqa: SLF001
     return await _build_product_out(service, product)
 
 
@@ -669,15 +587,7 @@ async def create_variant(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> VariantAdminOut:
     """Create one variant (a full combination of variation-attribute values)."""
-    try:
-        variant = await service.create_variant(product_id, payload)
-    except (
-        AdminNotFoundError,
-        AdminValidationError,
-        AdminConflictError,
-        PublicationError,
-    ) as exc:
-        _raise_http(exc)
+    variant = await service.create_variant(product_id, payload)
     return await _variant_out(service, variant)
 
 
@@ -696,10 +606,7 @@ async def generate_product_variants(
     Returns the variants that were created plus a count of the combinations that
     already existed and were skipped (the operation is idempotent).
     """
-    try:
-        created, skipped = await service.generate_variants(product_id)
-    except (AdminNotFoundError, AdminValidationError, PublicationError) as exc:
-        _raise_http(exc)
+    created, skipped = await service.generate_variants(product_id)
     return VariantGenerateResult(
         created=[await _variant_out(service, variant) for variant in created],
         skipped=skipped,
@@ -714,10 +621,7 @@ async def update_variant(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> VariantAdminOut:
     """Update a variant's price / stock / order / active flag."""
-    try:
-        variant = await service.update_variant(variant_id, payload)
-    except (AdminNotFoundError, AdminConflictError, PublicationError) as exc:
-        _raise_http(exc)
+    variant = await service.update_variant(variant_id, payload)
     return await _variant_out(service, variant)
 
 
@@ -731,10 +635,7 @@ async def delete_variant(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Delete a variant (its value links + image bindings)."""
-    try:
-        await service.delete_variant(variant_id)
-    except (AdminNotFoundError, PublicationError) as exc:
-        _raise_http(exc)
+    await service.delete_variant(variant_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -773,10 +674,7 @@ async def update_attribute(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> AttributeOut:
     """Update an attribute's ``code`` and/or its translations."""
-    try:
-        attribute = await service.update_attribute(attribute_id, payload)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    attribute = await service.update_attribute(attribute_id, payload)
     return await _build_attribute_out(service, attribute)
 
 
@@ -787,10 +685,7 @@ async def delete_attribute(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Delete an attribute with its translations, values and links."""
-    try:
-        await service.delete_attribute(attribute_id)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    await service.delete_attribute(attribute_id)
 
 
 @router.post(
@@ -805,10 +700,7 @@ async def create_attribute_value(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> AttributeValueOut:
     """Create a value under an attribute with its translations."""
-    try:
-        value = await service.create_attribute_value(attribute_id, payload)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    value = await service.create_attribute_value(attribute_id, payload)
     _, _, value_rows = await service.get_attribute_detail(attribute_id)
     translations = next(
         (vt for v, vt in value_rows if v.id == value.id),
@@ -834,10 +726,7 @@ async def update_attribute_value(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> AttributeValueOut:
     """Replace an attribute value's translations."""
-    try:
-        value = await service.update_attribute_value(value_id, payload)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    value = await service.update_attribute_value(value_id, payload)
     _, _, value_rows = await service.get_attribute_detail(value.attribute_id)
     translations = next(
         (vt for v, vt in value_rows if v.id == value.id),
@@ -862,7 +751,4 @@ async def delete_attribute_value(
     service: AdminCatalogService = Depends(get_admin_catalog_service),
 ) -> None:
     """Delete an attribute value, its translations and product links."""
-    try:
-        await service.delete_attribute_value(value_id)
-    except AdminNotFoundError as exc:
-        _raise_http(exc)
+    await service.delete_attribute_value(value_id)

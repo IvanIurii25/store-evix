@@ -20,8 +20,9 @@ _BAD_CURSOR: str = "not-base64!!"
 # Expected HTTP statuses.
 _HTTP_NOT_FOUND: int = 404
 _HTTP_BAD_REQUEST: int = 400
-# Unified error envelope code for HTTPException.
-_ERROR_CODE: str = "http_error"
+# Unified error envelope codes carried by the migrated domain exceptions.
+_NOT_FOUND_CODE: str = "not_found"
+_INVALID_CURSOR_CODE: str = "invalid_cursor"
 
 
 class TestCategoryProductsErrors:
@@ -37,7 +38,7 @@ class TestCategoryProductsErrors:
 
         # Assert: 404 in the unified error envelope.
         assert resp.status_code == _HTTP_NOT_FOUND, "unknown category → 404"
-        assert resp.json()["error"]["code"] == _ERROR_CODE, "unified envelope"
+        assert resp.json()["error"]["code"] == _NOT_FOUND_CODE, "unified envelope"
 
     async def test_bad_cursor_returns_400(self, seed, client) -> None:
         """A malformed cursor maps InvalidCursorError → 400 envelope."""
@@ -53,7 +54,7 @@ class TestCategoryProductsErrors:
 
         # Assert: 400 in the unified error envelope.
         assert resp.status_code == _HTTP_BAD_REQUEST, "bad cursor → 400"
-        assert resp.json()["error"]["code"] == _ERROR_CODE, "unified envelope"
+        assert resp.json()["error"]["code"] == _INVALID_CURSOR_CODE, "unified envelope"
 
 
 class TestAllProductsErrors:
@@ -72,4 +73,4 @@ class TestAllProductsErrors:
 
         # Assert: 400 in the unified error envelope.
         assert resp.status_code == _HTTP_BAD_REQUEST, "bad cursor → 400"
-        assert resp.json()["error"]["code"] == _ERROR_CODE, "unified envelope"
+        assert resp.json()["error"]["code"] == _INVALID_CURSOR_CODE, "unified envelope"

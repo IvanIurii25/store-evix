@@ -16,9 +16,11 @@ maps to responses, and it commits its own unit of work (add/update/remove/merge)
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import normalize_lang
+from app.core.errors import DomainError
 from app.models.cart import Cart
 from app.models.catalog import Product, ProductVariant
 from app.repositories.cart_repo import NAME_LANG, CartRepository
@@ -26,16 +28,22 @@ from app.repositories.catalog_repo import CatalogRepository
 from app.schemas.cart import CartItemOut, CartOut
 
 
-class CartError(Exception):
-    """Base class for cart domain errors (mapped to HTTP by the router)."""
+class CartError(DomainError):
+    """Base class for cart domain errors (rendered by the global handler)."""
 
 
 class ProductNotAvailableError(CartError):
     """The requested product does not exist or is not active for purchase."""
 
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "product_not_available"
+
 
 class ItemNotFoundError(CartError):
     """The addressed line is not present in the cart."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "item_not_found"
 
 
 class CartService:

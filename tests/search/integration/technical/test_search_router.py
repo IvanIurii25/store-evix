@@ -1,18 +1,18 @@
 """Router-level tests for the search endpoints (B3).
 
 The ASGI ``client`` runs handlers in a separate anyio task the line tracer does
-not follow, so the domain-error mapping branch of ``category_facets`` is covered
-here by awaiting the handler coroutine directly with a real session (the same
-dependency the router receives), asserting it converts
-:class:`~app.services.search_service.NotFoundError` into a 404
-:class:`fastapi.HTTPException`.
+not follow, so the unknown-slug path of ``category_facets`` is covered here by
+awaiting the handler coroutine directly with a real session (the same dependency
+the router receives), asserting it propagates
+:class:`~app.services.search_service.NotFoundError` (a
+:class:`~app.core.errors.DomainError` the unified handler renders as 404).
 """
 
 import pytest
-from fastapi import HTTPException, status
+from fastapi import status
 
 from app.api.routers.search import category_facets, search
-from app.services.search_service import DEFAULT_SEARCH_PAGE_SIZE
+from app.services.search_service import DEFAULT_SEARCH_PAGE_SIZE, NotFoundError
 
 # Language whose tsearch config the seed tree translations are written for.
 SEARCH_LANG: str = "ru"
@@ -22,23 +22,23 @@ class TestCategoryFacetsRouter:
     """Direct coroutine calls into the facets route handler."""
 
     @pytest.mark.asyncio
-    async def test_unknown_slug_is_mapped_to_http_404(self, seed):
-        """An unknown category slug makes the handler raise a 404
-        :class:`HTTPException` (the ``except NotFoundError`` mapping branch)."""
+    async def test_unknown_slug_raises_not_found(self, seed):
+        """An unknown category slug makes the handler propagate ``NotFoundError``
+        (a ``DomainError`` carrying status 404 that the unified handler renders)."""
         # Arrange: tree exists but the requested slug is absent.
         await seed["build_tree"]()
         session = seed["session"]
 
-        # Act / Assert: the handler maps the domain error to HTTP 404.
-        with pytest.raises(HTTPException) as excinfo:
+        # Act / Assert: the handler surfaces the domain error unchanged.
+        with pytest.raises(NotFoundError) as excinfo:
             await category_facets(
                 slug="definitely-missing", lang=SEARCH_LANG, session=session
             )
         assert excinfo.value.status_code == status.HTTP_404_NOT_FOUND, (
             "an unknown slug must be surfaced as HTTP 404"
         )
-        assert "definitely-missing" in excinfo.value.detail, (
-            "the 404 detail must carry the offending slug"
+        assert "definitely-missing" in str(excinfo.value), (
+            "the error message must carry the offending slug"
         )
 
 

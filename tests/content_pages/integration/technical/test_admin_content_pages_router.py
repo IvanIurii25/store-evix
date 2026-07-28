@@ -2,21 +2,19 @@
 
 The route handlers are ``async def`` functions with the auth + session already
 resolved by ``Depends``; here they are called **directly** (staff user + the
-transactional ``db_session`` passed in) so coverage traces the handler bodies and
-their error mappings — the ASGI/anyio path used by ``staff_client`` executes the
-handlers but coverage cannot trace inside that worker. A couple of end-to-end
-``staff_client`` tests remain as an integration smoke check, plus a direct unit
-test of the ``_raise_http`` re-raise branch that no HTTP path can reach.
+transactional ``db_session`` passed in) so coverage traces the handler bodies —
+the ASGI/anyio path used by ``staff_client`` executes the handlers but coverage
+cannot trace inside that worker. The handlers no longer catch service errors:
+the domain errors propagate and the registered handler renders them into the
+unified envelope. A couple of end-to-end ``staff_client`` tests remain as an
+integration smoke check.
 """
 
 import pytest
-from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routers import admin_content_pages as router_mod
 from app.api.routers.admin_content_pages import (
-    _raise_http,
     create_page,
     delete_page,
     get_page,
@@ -27,6 +25,10 @@ from app.schemas.content_page import (
     ContentPageCreate,
     ContentPageTranslationIn,
     ContentPageUpdate,
+)
+from app.services.content_page_service import (
+    ContentPageConflictError,
+    ContentPageNotFoundError,
 )
 from tests.factories import create_content_page, create_staff
 
@@ -129,10 +131,11 @@ class TestAdminContentPagesHandlersReads:
         # Arrange
         staff = await create_staff(db_session)
 
-        # Act / Assert: the not-found handler maps to a 404 HTTPException.
-        with pytest.raises(HTTPException) as caught:
+        # Act / Assert: the handler propagates the not-found domain error.
+        with pytest.raises(ContentPageNotFoundError) as caught:
             await get_page(page_id=MISSING_PAGE_ID, _staff=staff, session=db_session)
-        assert caught.value.status_code == HTTP_NOT_FOUND, "must map to 404"
+        assert caught.value.status_code == HTTP_NOT_FOUND, "renders as 404"
+        assert caught.value.code == "not_found", "renders with the not_found code"
 
 
 class TestAdminContentPagesHandlersWrites:
@@ -157,12 +160,13 @@ class TestAdminContentPagesHandlersWrites:
         staff = await create_staff(db_session)
         await create_content_page(db_session, slug="dup")
 
-        # Act / Assert: the conflict handler maps to a 409 HTTPException.
-        with pytest.raises(HTTPException) as caught:
+        # Act / Assert: the handler propagates the conflict domain error.
+        with pytest.raises(ContentPageConflictError) as caught:
             await create_page(
                 payload=_create(slug="dup"), _staff=staff, session=db_session
             )
-        assert caught.value.status_code == HTTP_CONFLICT, "must map to 409"
+        assert caught.value.status_code == HTTP_CONFLICT, "renders as 409"
+        assert caught.value.code == "conflict", "renders with the conflict code"
 
     async def test_update_page_returns_out_dto(self, db_session: AsyncSession) -> None:
         # Arrange: a draft page to publish via update.
@@ -185,14 +189,14 @@ class TestAdminContentPagesHandlersWrites:
         staff = await create_staff(db_session)
 
         # Act / Assert
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(ContentPageNotFoundError) as caught:
             await update_page(
                 page_id=MISSING_PAGE_ID,
                 payload=_update("ghost"),
                 _staff=staff,
                 session=db_session,
             )
-        assert caught.value.status_code == HTTP_NOT_FOUND, "must map to 404"
+        assert caught.value.status_code == HTTP_NOT_FOUND, "renders as 404"
 
     async def test_update_slug_clash_raises_409(self, db_session: AsyncSession) -> None:
         # Arrange: retarget page-b onto page-a's slug.
@@ -201,14 +205,14 @@ class TestAdminContentPagesHandlersWrites:
         target = await create_content_page(db_session, slug="own-b")
 
         # Act / Assert
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(ContentPageConflictError) as caught:
             await update_page(
                 page_id=target.id,
                 payload=_update("own-a"),
                 _staff=staff,
                 session=db_session,
             )
-        assert caught.value.status_code == HTTP_CONFLICT, "must map to 409"
+        assert caught.value.status_code == HTTP_CONFLICT, "renders as 409"
 
     async def test_delete_page_succeeds(self, db_session: AsyncSession) -> None:
         # Arrange
@@ -226,9 +230,9 @@ class TestAdminContentPagesHandlersWrites:
         staff = await create_staff(db_session)
 
         # Act / Assert
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(ContentPageNotFoundError) as caught:
             await delete_page(page_id=MISSING_PAGE_ID, _staff=staff, session=db_session)
-        assert caught.value.status_code == HTTP_NOT_FOUND, "must map to 404"
+        assert caught.value.status_code == HTTP_NOT_FOUND, "renders as 404"
 
 
 class TestAdminContentPagesApiSmoke:
@@ -252,20 +256,3 @@ class TestAdminContentPagesApiSmoke:
         # Assert: the domain error surfaces as the unified 404 envelope.
         assert resp.status_code == HTTP_NOT_FOUND, resp.text
         assert resp.json()["error"]["code"] == "not_found", "envelope code check"
-
-
-class TestRaiseHttpHelper:
-    """Direct unit test of the ``_raise_http`` fall-through re-raise branch."""
-
-    async def test_module_helper_is_exported(self) -> None:
-        # Sanity: the helper is imported from the module under test.
-        assert _raise_http is router_mod._raise_http, "helper import must match"
-
-    async def test_raise_http_reraises_unknown_error(self) -> None:
-        # Arrange: an error that is neither not-found nor conflict.
-        original = RuntimeError("unexpected")
-
-        # Act / Assert: the helper re-raises non-domain errors untouched.
-        with pytest.raises(RuntimeError) as caught:
-            _raise_http(original)
-        assert caught.value is original, "unknown errors must be re-raised as-is"

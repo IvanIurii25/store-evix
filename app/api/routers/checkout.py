@@ -2,10 +2,13 @@
 
 Thin router: it resolves the caller (authenticated user via ``guest_or_user``, or
 a guest via the ``session_token`` cookie), delegates to
-:class:`~app.services.checkout_service.CheckoutService`, serializes the result,
-and maps domain errors to HTTP status codes (the app's HTTPException handler
-renders the unified ``{error:{code,message,details?}}`` envelope). No business
-logic and no SQL live here.
+:class:`~app.services.checkout_service.CheckoutService`, and serializes the
+result. Checkout and promo domain errors are :class:`DomainError` subclasses
+rendered by the app's registered handler into the unified
+``{error:{code,message,details?}}`` envelope, so the router does not catch them.
+The one exception is :class:`MaibError` (a card-gateway failure), which is
+translated here into a 502 ``payment_gateway_error`` envelope. No business logic
+and no SQL live here.
 
 ``POST /checkout/quote`` is an idempotent predraft (no order created);
 ``POST /checkout`` creates the COD order atomically. Both accept guests by cookie.
@@ -31,21 +34,8 @@ from app.schemas.order import (
     QuoteOut,
     QuoteRequest,
 )
-from app.services.checkout_service import (
-    CheckoutService,
-    DeliveryAddressForbiddenError,
-    DeliveryAddressRequiredError,
-    EmptyCartError,
-    OutOfStockError,
-    ProductNotFoundError,
-)
+from app.services.checkout_service import CheckoutService
 from app.services.payment.maib_client import MaibError
-from app.services.promo_service import (
-    PromoExpiredError,
-    PromoInvalidError,
-    PromoMinOrderError,
-    PromoUsageLimitError,
-)
 
 router = APIRouter(prefix="/checkout", tags=["checkout"])
 
@@ -139,36 +129,6 @@ def _caller_identity(
     return None, _read_session_token(request)
 
 
-def _promo_http_error(
-    exc: PromoInvalidError
-    | PromoExpiredError
-    | PromoMinOrderError
-    | PromoUsageLimitError,
-) -> HTTPException:
-    """Map a promo domain error to its HTTP status + coded envelope detail.
-
-    ``promo_invalid`` (unknown/disabled) → 404; ``promo_expired`` /
-    ``promo_min_order`` → 400; ``promo_usage_limit`` → 409. The ``code`` is
-    surfaced verbatim so the storefront can show a targeted message.
-
-    Args:
-        exc: The raised promo error.
-
-    Returns:
-        HTTPException: The mapped exception the router re-raises.
-    """
-    if isinstance(exc, PromoInvalidError):
-        http_status = status.HTTP_404_NOT_FOUND
-    elif isinstance(exc, PromoUsageLimitError):
-        http_status = status.HTTP_409_CONFLICT
-    else:
-        http_status = status.HTTP_400_BAD_REQUEST
-    return HTTPException(
-        status_code=http_status,
-        detail={"code": exc.code, "message": str(exc)},
-    )
-
-
 @router.post("/quote", response_model=QuoteOut)
 async def quote(
     data: QuoteRequest,
@@ -190,40 +150,24 @@ async def quote(
         QuoteOut: The subtotal / discount / delivery / total breakdown.
 
     Raises:
-        HTTPException: 400 for an empty cart; 422 for courier without an address;
-            403 for a ``delivery_address_id`` the caller does not own.
+        EmptyCartError: 400 for an empty cart.
+        DeliveryAddressRequiredError: 422 for courier without an address.
+        DeliveryAddressForbiddenError: 403 for a ``delivery_address_id`` the
+            caller does not own.
+        PromoError: 400/404/409 for an unusable ``promo_code`` (rendered per its
+            leaf status + code by the registered handler).
     """
     user_id, token = _caller_identity(request, user)
     service = CheckoutService(session)
-    try:
-        return await service.quote(
-            user_id=user_id,
-            session_token=token,
-            delivery_type=data.delivery_type,
-            delivery_address_id=data.delivery_address_id,
-            delivery_address=data.delivery_address,
-            promo_code=data.promo_code,
-            lang=lang,
-        )
-    except EmptyCartError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except DeliveryAddressForbiddenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
-        ) from exc
-    except DeliveryAddressRequiredError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
-        ) from exc
-    except (
-        PromoInvalidError,
-        PromoExpiredError,
-        PromoMinOrderError,
-        PromoUsageLimitError,
-    ) as exc:
-        raise _promo_http_error(exc) from exc
+    return await service.quote(
+        user_id=user_id,
+        session_token=token,
+        delivery_type=data.delivery_type,
+        delivery_address_id=data.delivery_address_id,
+        delivery_address=data.delivery_address,
+        promo_code=data.promo_code,
+        lang=lang,
+    )
 
 
 @router.post(
@@ -251,12 +195,19 @@ async def checkout(
             ``ro``; unsupported values fall back to the default).
 
     Returns:
-        OrderOut | JSONResponse: The created order, or a 409 ``out_of_stock``
-            envelope when stock is insufficient.
+        OrderOut | JSONResponse: The created order, or a 502
+            ``payment_gateway_error`` envelope when the card gateway is
+            unreachable after the order was persisted.
 
     Raises:
-        HTTPException: 400 empty cart; 422 courier without an address; 403 for a
-            ``delivery_address_id`` the caller does not own.
+        EmptyCartError: 400 for an empty cart.
+        DeliveryAddressRequiredError: 422 for courier without an address.
+        DeliveryAddressForbiddenError: 403 for a ``delivery_address_id`` the
+            caller does not own.
+        OutOfStockError: 409 ``out_of_stock`` (with the offending ``product_id``
+            in ``details``) when stock is insufficient at commit time.
+        PromoError: 400/404/409 for an unusable ``promo_code``. All the above are
+            rendered by the registered :class:`DomainError` handler.
     """
     _validate_payment_method(data.payment_method)
     user_id, token = _caller_identity(request, user)
@@ -274,35 +225,6 @@ async def checkout(
             payment_method=data.payment_method,
             client_ip=_client_ip(request),
             lang=lang,
-        )
-    except EmptyCartError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except DeliveryAddressForbiddenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
-        ) from exc
-    except DeliveryAddressRequiredError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
-        ) from exc
-    except (
-        PromoInvalidError,
-        PromoExpiredError,
-        PromoMinOrderError,
-        PromoUsageLimitError,
-    ) as exc:
-        raise _promo_http_error(exc) from exc
-    except OutOfStockError as exc:
-        # Return the envelope directly so ``error.code`` is exactly
-        # ``out_of_stock`` (the shared HTTPException handler always emits
-        # ``http_error``, which the contract forbids here).
-        return error_response(
-            status_code=status.HTTP_409_CONFLICT,
-            code="out_of_stock",
-            message=str(exc),
-            details={"product_id": exc.product_id},
         )
     except MaibError:
         # The order was created (pending) but maib was unreachable; the payment
@@ -329,7 +251,7 @@ async def quick_buy(
     data: QuickBuyRequest,
     session: AsyncSession = Depends(get_session),
     lang: str = Query(default="ro", description="Snapshot language (ru|ro)."),
-) -> OrderOut | JSONResponse:
+) -> OrderOut:
     """Create a one-product COD order in one click (feature A2).
 
     A phone-only guest flow (no cart, no full checkout): the caller supplies a
@@ -344,32 +266,22 @@ async def quick_buy(
             ``ro``; unsupported values fall back to the default).
 
     Returns:
-        OrderOut | JSONResponse: The created order, a 404 ``product_not_found``
-            envelope for a missing/inactive product, or a 409 ``out_of_stock``
-            envelope when stock is insufficient.
+        OrderOut: The created order.
+
+    Raises:
+        ProductNotFoundError: 404 ``product_not_found`` for a missing/inactive
+            product (with the ``product_id`` in ``details``).
+        OutOfStockError: 409 ``out_of_stock`` when stock is insufficient (with
+            the ``product_id`` in ``details``). Both are rendered by the
+            registered :class:`DomainError` handler.
     """
     service = CheckoutService(session)
-    try:
-        return await service.quick_buy(
-            product_id=data.product_id,
-            variant_id=data.variant_id,
-            phone=data.phone,
-            name=data.name,
-            email=data.email,
-            qty=data.qty,
-            lang=lang,
-        )
-    except ProductNotFoundError as exc:
-        return error_response(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="product_not_found",
-            message=str(exc),
-            details={"product_id": exc.product_id},
-        )
-    except OutOfStockError as exc:
-        return error_response(
-            status_code=status.HTTP_409_CONFLICT,
-            code="out_of_stock",
-            message=str(exc),
-            details={"product_id": exc.product_id},
-        )
+    return await service.quick_buy(
+        product_id=data.product_id,
+        variant_id=data.variant_id,
+        phone=data.phone,
+        name=data.name,
+        email=data.email,
+        qty=data.qty,
+        lang=lang,
+    )

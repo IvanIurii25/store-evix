@@ -2,9 +2,9 @@
 
 Thin back-office router, entirely behind ``Depends(current_staff)`` (a non-staff
 caller gets 403 from the dependency, a guest 401). It delegates to
-:class:`~app.services.review_service.ReviewService` and maps
-:class:`~app.services.review_service.ReviewNotFoundError` to 404 (mirrors
-:mod:`app.api.routers.admin_support`). No business logic and no SQL live here.
+:class:`~app.services.review_service.ReviewService`; domain failures raise
+:class:`~app.services.review_service.ReviewError` subclasses that the shared
+handler renders into the unified envelope. No business logic and no SQL live here.
 
 Endpoints (paths carry ``/admin/reviews``; the ``/api/v1`` prefix is added by the
 integrator when mounting):
@@ -15,7 +15,7 @@ integrator when mounting):
 * ``DELETE /admin/reviews/{review_id}``                 — delete.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
@@ -26,11 +26,7 @@ from app.schemas.review import (
     PendingCountOut,
     ReviewModerateIn,
 )
-from app.services.review_service import (
-    InvalidCursorError,
-    ReviewNotFoundError,
-    ReviewService,
-)
+from app.services.review_service import ReviewService
 
 router = APIRouter(
     prefix="/admin/reviews",
@@ -69,19 +65,13 @@ async def list_reviews(
         AdminReviewList: ``{data, next_cursor}`` envelope.
 
     Raises:
-        HTTPException: 400 for a malformed cursor.
+        InvalidCursorError: 422 for a malformed cursor.
     """
-    try:
-        return await service.list_admin(
-            status=status_filter,
-            product_id=product_id,
-            cursor=cursor,
-        )
-    except InvalidCursorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    return await service.list_admin(
+        status=status_filter,
+        product_id=product_id,
+        cursor=cursor,
+    )
 
 
 @router.get("/pending-count", response_model=PendingCountOut)
@@ -116,15 +106,9 @@ async def moderate_review(
         AdminReviewOut: The updated review.
 
     Raises:
-        HTTPException: 404 if the review does not exist.
+        ReviewNotFoundError: 404 if the review does not exist.
     """
-    try:
-        review = await service.moderate(review_id, payload.status)
-    except ReviewNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    review = await service.moderate(review_id, payload.status)
     return AdminReviewOut.model_validate(review)
 
 
@@ -140,12 +124,6 @@ async def delete_review(
         service: Injected review service.
 
     Raises:
-        HTTPException: 404 if the review does not exist.
+        ReviewNotFoundError: 404 if the review does not exist.
     """
-    try:
-        await service.delete_admin(review_id)
-    except ReviewNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    await service.delete_admin(review_id)

@@ -90,7 +90,7 @@ async def test_quote_courier_without_address_422(
     resp = await client.post(_QUOTE, json={"delivery_type": "courier"})
 
     assert resp.status_code == 422, resp.text
-    assert resp.json()["error"]["code"] == "http_error"
+    assert resp.json()["error"]["code"] == "delivery_address_required"
 
 
 async def test_quote_courier_inline_address(client: AsyncClient, add_product) -> None:

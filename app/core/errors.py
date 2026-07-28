@@ -18,6 +18,24 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 logger = logging.getLogger(__name__)
 
 
+class DomainError(Exception):
+    """Base class for domain/service errors mapped to the unified envelope.
+
+    Subclasses declare ``status_code`` and ``code`` as class attributes; the
+    registered handler renders any instance into the
+    ``{error:{code,message,details?}}`` shape. Pass structured context via
+    ``details`` (e.g. ``{"product_id": 42}``).
+    """
+
+    status_code: int = status.HTTP_400_BAD_REQUEST
+    code: str = "error"
+
+    def __init__(self, message: str = "", *, details: Any = None) -> None:
+        """Store the human message and optional structured details."""
+        super().__init__(message)
+        self.details = details
+
+
 def error_response(
     status_code: int,
     code: str,
@@ -104,6 +122,23 @@ async def validation_exception_handler(
     )
 
 
+async def domain_exception_handler(
+    request: Request,
+    exc: DomainError,
+) -> JSONResponse:
+    """Render a :class:`DomainError` into the unified envelope.
+
+    The status code and machine-readable code come from the exception class;
+    the message is ``str(exc)`` and any structured context from ``details``.
+    """
+    return error_response(
+        status_code=exc.status_code,
+        code=exc.code,
+        message=str(exc),
+        details=exc.details,
+    )
+
+
 async def unhandled_exception_handler(
     request: Request,
     exc: Exception,
@@ -121,4 +156,5 @@ def register_exception_handlers(app: FastAPI) -> None:
     """Register all unified-format exception handlers on the app."""
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(DomainError, domain_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

@@ -3,8 +3,9 @@
 Thin back-office router entirely behind ``Depends(current_staff)`` (JWT +
 ``is_staff``; a non-staff caller gets 403 from the dependency). It delegates to
 :class:`~app.services.admin_settings_service.SettingsService` (SEO) and
-:class:`~app.services.admin_settings_service.StaffService` (roster), and maps
-domain errors to HTTP status codes. No business logic and no SQL live here.
+:class:`~app.services.admin_settings_service.StaffService` (roster). Domain
+errors raised by the services subclass ``DomainError`` and are rendered by the
+registered handler, so no error mapping, business logic, or SQL lives here.
 
 Endpoints (the ``/api/v1`` prefix is added by the integrator when mounting):
 
@@ -14,7 +15,7 @@ Endpoints (the ``/api/v1`` prefix is added by the integrator when mounting):
 * ``PATCH /admin/staff/{user_id}`` — (de)activate / toggle the staff flag.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
@@ -27,12 +28,7 @@ from app.schemas.admin_settings import (
     StaffList,
     StaffUpdate,
 )
-from app.services.admin_settings_service import (
-    SettingsService,
-    StaffConflictError,
-    StaffNotFoundError,
-    StaffService,
-)
+from app.services.admin_settings_service import SettingsService, StaffService
 
 router = APIRouter(
     prefix="/admin",
@@ -102,21 +98,16 @@ async def update_staff(
     _staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
 ) -> StaffItem:
-    """(De)activate a staff user or toggle their staff flag (lockout-guarded)."""
-    try:
-        user = await StaffService(session).update_staff(
-            user_id,
-            is_active=payload.is_active,
-            is_staff=payload.is_staff,
-        )
-    except StaffNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": str(exc)},
-        ) from exc
-    except StaffConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "conflict", "message": str(exc)},
-        ) from exc
+    """(De)activate a staff user or toggle their staff flag (lockout-guarded).
+
+    Raises:
+        StaffNotFoundError: If the user does not exist (rendered as 404).
+        StaffConflictError: If the change would remove the last active staff
+            account (rendered as 409).
+    """
+    user = await StaffService(session).update_staff(
+        user_id,
+        is_active=payload.is_active,
+        is_staff=payload.is_staff,
+    )
     return StaffItem.model_validate(user)

@@ -131,7 +131,7 @@ async def test_api_category_detail_404(seed, client):
     resp = await client.get("/api/v1/catalog/categories/missing?lang=ro")
 
     assert resp.status_code == 404
-    assert resp.json()["error"]["code"] == "http_error"
+    assert resp.json()["error"]["code"] == "not_found"
 
 
 @pytest.mark.asyncio

@@ -19,8 +19,10 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import DomainError
 from app.models.order import Order
 from app.repositories.order_repo import OrderRepository
 
@@ -45,12 +47,15 @@ PAYMENT_TRANSITIONS: dict[str, frozenset[str]] = {
 _STOCK_RETURNING_STATUSES: frozenset[str] = frozenset({"canceled"})
 
 
-class OrderError(Exception):
-    """Base class for order domain errors (mapped to HTTP by the router)."""
+class OrderError(DomainError):
+    """Base class for order domain errors (rendered via the unified envelope)."""
 
 
 class IllegalTransitionError(OrderError):
     """The requested status/payment transition is not allowed by the machine."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "illegal_transition"
 
 
 class OrderService:

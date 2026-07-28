@@ -5,18 +5,20 @@ reorder, move-with-subtree-path-recompute), product CRUD (+ translations, media
 uploads, attribute links, activation) and attribute CRUD (+ values). It reuses
 :class:`~app.services.catalog_service.CatalogService` for the publication rule
 and the ``product_card`` read-model rebuild — those invariants live in exactly
-one place (§10). No HTTP knowledge: the router maps the raised exceptions.
+one place (§10). No HTTP knowledge: the raised errors subclass
+:class:`~app.core.errors.DomainError`, which the global handler renders.
 """
 
 import asyncio
 import itertools
 import logging
 
-from fastapi import UploadFile
+from fastapi import UploadFile, status
 from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import DomainError
 from app.core.images import ImageValidationError, validate_and_build_variants
 from app.core.storage import get_storage
 from app.models.catalog import (
@@ -64,8 +66,8 @@ DEFAULT_MEDIA_KIND: str = "image"
 LOW_STOCK_THRESHOLD: int = 5
 
 
-class AdminCatalogError(Exception):
-    """Base class for admin-catalog domain errors (mapped to HTTP by the router)."""
+class AdminCatalogError(DomainError):
+    """Base class for admin-catalog domain errors (rendered by the global handler)."""
 
     code: str = "admin_catalog_error"
 
@@ -73,18 +75,21 @@ class AdminCatalogError(Exception):
 class AdminNotFoundError(AdminCatalogError):
     """A referenced admin resource does not exist."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class AdminConflictError(AdminCatalogError):
     """A write would violate a uniqueness / relational invariant."""
 
+    status_code = status.HTTP_409_CONFLICT
     code = "conflict"
 
 
 class AdminValidationError(AdminCatalogError):
     """A payload is structurally valid but semantically rejected."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
     code = "invalid"
 
 

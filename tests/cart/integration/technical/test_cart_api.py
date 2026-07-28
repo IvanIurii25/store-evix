@@ -180,7 +180,7 @@ async def test_add_inactive_product_rejected(
     resp = await client.post("/api/v1/cart/items", json={"product_id": 1, "qty": 1})
 
     assert resp.status_code == 404
-    assert resp.json()["error"]["code"] == "http_error"
+    assert resp.json()["error"]["code"] == "product_not_available"
 
 
 async def test_cart_name_is_language_aware(

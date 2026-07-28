@@ -30,12 +30,7 @@ from app.schemas.review import (
     ReviewSort,
     ReviewSubmitIn,
 )
-from app.services.review_service import (
-    InvalidCursorError,
-    ReviewForbiddenError,
-    ReviewNotFoundError,
-    ReviewService,
-)
+from app.services.review_service import ReviewService
 
 router = APIRouter(tags=["reviews"])
 
@@ -64,15 +59,9 @@ async def submit_review(
         ReviewOut: The persisted, pending review.
 
     Raises:
-        HTTPException: 404 if the product does not exist.
+        ReviewNotFoundError: 404 if the product does not exist.
     """
-    try:
-        review = await service.submit(user.id, payload)
-    except ReviewNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    review = await service.submit(user.id, payload)
     return ReviewOut.model_validate(review)
 
 
@@ -109,21 +98,10 @@ async def delete_my_review(
         service: Injected review service.
 
     Raises:
-        HTTPException: 404 if the review is missing; 403 if it is not the
-            caller's own review.
+        ReviewNotFoundError: 404 if the review is missing.
+        ReviewForbiddenError: 403 if it is not the caller's own review.
     """
-    try:
-        await service.delete_own(user.id, review_id)
-    except ReviewNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
-    except ReviewForbiddenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    await service.delete_own(user.id, review_id)
 
 
 @router.get(
@@ -154,7 +132,8 @@ async def list_product_reviews(
         ProductReviewsOut: ``{aggregate, data, next_cursor}`` envelope.
 
     Raises:
-        HTTPException: 404 if the slug is unknown; 400 for a bad cursor.
+        HTTPException: 404 if the slug is unknown.
+        InvalidCursorError: 422 for a malformed or sort-mismatched cursor.
     """
     translation = await CatalogRepository(session).get_product_translation_by_slug(
         slug, lang
@@ -164,14 +143,8 @@ async def list_product_reviews(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Product '{slug}' not found"},
         )
-    try:
-        return await ReviewService(session).list_public(
-            product_id=translation.product_id,
-            sort=sort,
-            cursor=cursor,
-        )
-    except InvalidCursorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    return await ReviewService(session).list_public(
+        product_id=translation.product_id,
+        sort=sort,
+        cursor=cursor,
+    )

@@ -20,6 +20,7 @@ a number is unknown; illegal transitions surface as
 machine (mapped to 409 by the router).
 """
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order import Order, OrderItem
@@ -29,7 +30,10 @@ from app.services.order_service import OrderError, OrderService
 
 
 class OrderNotFoundError(OrderError):
-    """No order exists for the requested number (mapped to 404 by the router)."""
+    """No order exists for the requested number (rendered as a 404 envelope)."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "order_not_found"
 
 
 class AdminOrderService:

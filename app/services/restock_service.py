@@ -12,18 +12,21 @@ domain rules:
   ``try/except`` (one failed send never blocks the rest), then marks only the
   ones that were actually sent as ``notified``.
 
-No HTTP knowledge: the router maps the raised exceptions.
+The raised :class:`RestockError` subclasses carry their own ``status_code`` and
+``code``; the unified :class:`~app.core.errors.DomainError` handler renders them.
 """
 
 import asyncio
 import logging
 
+from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import normalize_lang
 from app.core.config import settings
 from app.core.email import send_restock_notification
+from app.core.errors import DomainError
 from app.models.catalog import Product, ProductTranslation
 from app.models.restock import STATUS_ACTIVE, RestockSubscription
 from app.repositories.restock_repo import RestockRepository
@@ -36,27 +39,28 @@ logger = logging.getLogger(__name__)
 _SEND_CHUNK_SIZE: int = 10
 
 
-class RestockError(Exception):
-    """Base class for restock domain errors (mapped to HTTP by the router)."""
-
-    code: str = "restock_error"
+class RestockError(DomainError):
+    """Base class for restock domain errors (rendered by the unified handler)."""
 
 
 class RestockNotFoundError(RestockError):
     """The referenced product does not exist."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class ProductInStockError(RestockError):
     """Rejected a subscription because the product is currently in stock (§8.1)."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
     code = "in_stock"
 
 
 class RestockUnsupportedError(RestockError):
     """Restock subscriptions are not supported for this product (v1: variable)."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
     code = "unsupported"
 
 

@@ -2,11 +2,12 @@
 
 Thin back-office router, entirely behind ``Depends(current_staff)`` (a non-staff
 caller gets 403 from the dependency). It delegates to
-:class:`~app.services.support_service.SupportService`, serializes results into
-the shared :mod:`app.schemas.support` DTOs, and maps
-:class:`~app.services.support_service.ConversationNotFoundError` to 404 (mirrors
-how :mod:`app.api.routers.admin_orders` maps ``OrderNotFoundError``). No business
-logic and no SQL live here.
+:class:`~app.services.support_service.SupportService` and serializes results into
+the shared :mod:`app.schemas.support` DTOs. The service's
+:class:`~app.services.support_service.SupportError` subclasses carry their own
+``status_code``/``code`` and are rendered by the centralized
+:class:`~app.core.errors.DomainError` handler, so no ``try``/``except`` mapping
+lives here. No business logic and no SQL live here.
 
 Endpoints (paths carry ``/admin/support``; the ``/api/v1`` prefix is added by the
 integrator when mounting):
@@ -50,9 +51,6 @@ from app.schemas.support import (
     ThreadOut,
 )
 from app.services.support_service import (
-    CannedNotFoundError,
-    ConversationNotFoundError,
-    OrderNotFoundError,
     SupportCannedService,
     SupportService,
 )
@@ -324,16 +322,10 @@ async def reply(
         MessageOut: The persisted outbound message (with its delivery badge).
 
     Raises:
-        HTTPException: 404 if the conversation does not exist.
+        ConversationNotFoundError: 404 if the conversation does not exist.
     """
     svc = SupportService(session, redis)
-    try:
-        msg = await svc.reply(conversation_id, staff.id, payload.text)
-    except ConversationNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    msg = await svc.reply(conversation_id, staff.id, payload.text)
     # ``created_at`` is a DB ``server_default`` not populated on the instance
     # after commit — refresh so the serialized message carries a timestamp.
     await session.refresh(msg)
@@ -359,16 +351,10 @@ async def set_status(
         ConversationOut: The updated conversation.
 
     Raises:
-        HTTPException: 404 if the conversation does not exist.
+        ConversationNotFoundError: 404 if the conversation does not exist.
     """
     svc = SupportService(session, redis)
-    try:
-        conv = await svc.set_status(conversation_id, payload.status)
-    except ConversationNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    conv = await svc.set_status(conversation_id, payload.status)
     return ConversationOut.model_validate(conv)
 
 
@@ -391,21 +377,11 @@ async def link_order(
         LinkedOrderOut: The linked order's summary.
 
     Raises:
-        HTTPException: 404 if the order or the conversation does not exist.
+        OrderNotFoundError: 404 if no order matches the number.
+        ConversationNotFoundError: 404 if the conversation does not exist.
     """
     svc = SupportService(session, redis)
-    try:
-        order = await svc.link_order(conversation_id, payload.order_number)
-    except OrderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": "Заказ не найден"},
-        ) from exc
-    except ConversationNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    order = await svc.link_order(conversation_id, payload.order_number)
     return LinkedOrderOut.model_validate(order)
 
 
@@ -426,16 +402,10 @@ async def unlink_order(
         redis: Injected async Redis client (required by the service ctor).
 
     Raises:
-        HTTPException: 404 if the conversation does not exist.
+        ConversationNotFoundError: 404 if the conversation does not exist.
     """
     svc = SupportService(session, redis)
-    try:
-        await svc.unlink_order(conversation_id)
-    except ConversationNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    await svc.unlink_order(conversation_id)
 
 
 @router.delete(
@@ -460,16 +430,10 @@ async def delete_conversation(
         redis: Injected async Redis client (live-event publishing).
 
     Raises:
-        HTTPException: 404 if the conversation does not exist.
+        ConversationNotFoundError: 404 if the conversation does not exist.
     """
     svc = SupportService(session, redis)
-    try:
-        await svc.delete_conversation(conversation_id)
-    except ConversationNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    await svc.delete_conversation(conversation_id)
 
 
 @router.get("/canned", response_model=list[CannedOut])
@@ -532,15 +496,9 @@ async def update_canned(
         CannedOut: The updated template.
 
     Raises:
-        HTTPException: 404 if the template does not exist.
+        CannedNotFoundError: 404 if the template does not exist.
     """
-    try:
-        canned = await SupportCannedService(session).update_canned(canned_id, payload)
-    except CannedNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    canned = await SupportCannedService(session).update_canned(canned_id, payload)
     return CannedOut.model_validate(canned)
 
 
@@ -556,12 +514,6 @@ async def delete_canned(
         session: Injected async DB session.
 
     Raises:
-        HTTPException: 404 if the template does not exist.
+        CannedNotFoundError: 404 if the template does not exist.
     """
-    try:
-        await SupportCannedService(session).delete_canned(canned_id)
-    except CannedNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    await SupportCannedService(session).delete_canned(canned_id)

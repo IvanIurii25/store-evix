@@ -1,16 +1,19 @@
 """Content-page service: public reads + back-office CRUD (CMS-lite, Phase 1).
 
 Wraps :class:`~app.repositories.content_page_repo.ContentPageRepository` with the
-business rules and owns committing. No HTTP knowledge here — the router maps the
-raised domain errors (:class:`ContentPageNotFoundError`,
-:class:`ContentPageConflictError`) to status codes.
+business rules and owns committing. No HTTP knowledge here — the raised domain
+errors (:class:`ContentPageNotFoundError`, :class:`ContentPageConflictError`)
+subclass :class:`~app.core.errors.DomainError` and are rendered into the unified
+envelope by the registered handler.
 
 The schema layer already guarantees both-language translations on create/update,
 so the service focuses on slug-uniqueness and existence invariants.
 """
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import DomainError
 from app.models.content_page import ContentPage, ContentPageTranslation
 from app.repositories.content_page_repo import ContentPageRepository
 from app.schemas.content_page import (
@@ -21,21 +24,23 @@ from app.schemas.content_page import (
 )
 
 
-class ContentPageError(Exception):
-    """Base class for content-page domain errors (mapped to HTTP by router)."""
+class ContentPageError(DomainError):
+    """Base class for content-page domain errors (rendered by the unified handler)."""
 
     code: str = "content_page_error"
 
 
 class ContentPageNotFoundError(ContentPageError):
-    """The referenced content page does not exist (mapped to 404)."""
+    """The referenced content page does not exist (renders as 404 ``not_found``)."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class ContentPageConflictError(ContentPageError):
-    """A write violates the slug-uniqueness invariant (mapped to 409)."""
+    """A write violates the slug-uniqueness invariant (renders as 409 ``conflict``)."""
 
+    status_code = status.HTTP_409_CONFLICT
     code = "conflict"
 
 

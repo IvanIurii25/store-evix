@@ -18,9 +18,11 @@ payment is a no-op, so maib's at-least-once delivery never double-applies.
 import logging
 from decimal import Decimal
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.errors import DomainError
 from app.models.order import Order
 from app.repositories.order_repo import OrderRepository
 from app.repositories.payment_repo import PaymentRepository
@@ -41,20 +43,29 @@ _STATUS_REFUNDED: str = "refunded"
 _TERMINAL_STATUSES: frozenset[str] = frozenset({_STATUS_OK, _STATUS_FAILED, _STATUS_REFUNDED})
 
 
-class PaymentError(Exception):
-    """Base class for card-payment domain errors (mapped to HTTP by routers)."""
+class PaymentError(DomainError):
+    """Base class for card-payment domain errors (rendered via the envelope)."""
 
 
 class CardPaymentDisabledError(PaymentError):
     """Card payment was requested while ``card_payment_enabled`` is false."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "card_payment_disabled"
+
 
 class PaymentNotFoundError(PaymentError):
     """No card payment exists for the given order (refund with nothing to refund)."""
 
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "payment_not_found"
+
 
 class RefundNotAllowedError(PaymentError):
     """The order is not a paid card order, so it cannot be refunded."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "refund_not_allowed"
 
 
 class PaymentService:

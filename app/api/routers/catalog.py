@@ -2,16 +2,17 @@
 
 Thin router: it validates input, resolves the language, delegates to
 :class:`~app.services.catalog_service.CatalogService`, and serializes the result.
-No business logic and no SQL live here. Domain errors from the service are mapped
-to HTTP status codes (the app's HTTPException handler renders the unified
-``{error:{code,message,details?}}`` envelope).
+No business logic and no SQL live here. Domain errors raised by the service
+subclass :class:`~app.core.errors.DomainError`; the global handler renders them
+into the unified ``{error:{code,message,details?}}`` envelope with the exception's
+own status code, so the router no longer catches or maps them.
 
 Mounted without the ``/api/v1`` prefix — the integrator adds it.
 """
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import get_lang
@@ -25,11 +26,7 @@ from app.schemas.catalog import (
     ProductSort,
     SitemapData,
 )
-from app.services.catalog_service import (
-    CatalogService,
-    InvalidCursorError,
-    NotFoundError,
-)
+from app.services.catalog_service import CatalogService
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
@@ -77,15 +74,10 @@ async def get_category(
         CategoryDetail: The category detail response.
 
     Raises:
-        HTTPException: 404 if the category is not found in the language.
+        NotFoundError: 404 if the category is not found in the language.
     """
     service = CatalogService(session)
-    try:
-        return await service.get_category(slug, lang)
-    except NotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    return await service.get_category(slug, lang)
 
 
 @router.get("/categories/{slug}/products", response_model=ProductListing)
@@ -114,27 +106,19 @@ async def list_category_products(
         ProductListing: ``{data, next_cursor}`` envelope.
 
     Raises:
-        HTTPException: 404 if the category is unknown, 400 for a bad cursor.
+        NotFoundError: 404 if the category is unknown in the language.
+        InvalidCursorError: 400 for a malformed cursor.
     """
     service = CatalogService(session)
-    try:
-        return await service.list_products(
-            category_slug=slug,
-            lang=lang,
-            sort=sort.value,
-            cursor=cursor,
-            price_min=price_min,
-            price_max=price_max,
-            value_ids=value_ids,
-        )
-    except NotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    except InvalidCursorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+    return await service.list_products(
+        category_slug=slug,
+        lang=lang,
+        sort=sort.value,
+        cursor=cursor,
+        price_min=price_min,
+        price_max=price_max,
+        value_ids=value_ids,
+    )
 
 
 @router.get("/products", response_model=ProductListing)
@@ -168,23 +152,18 @@ async def list_all_products(
         ProductListing: ``{data, next_cursor}`` envelope.
 
     Raises:
-        HTTPException: 400 for a bad cursor.
+        InvalidCursorError: 400 for a malformed cursor.
     """
     service = CatalogService(session)
-    try:
-        return await service.list_all_products(
-            lang=lang,
-            sort=sort.value,
-            cursor=cursor,
-            price_min=price_min,
-            price_max=price_max,
-            on_sale=on_sale,
-            featured=featured,
-        )
-    except InvalidCursorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+    return await service.list_all_products(
+        lang=lang,
+        sort=sort.value,
+        cursor=cursor,
+        price_min=price_min,
+        price_max=price_max,
+        on_sale=on_sale,
+        featured=featured,
+    )
 
 
 @router.get("/products/{slug}", response_model=ProductDetail)
@@ -204,15 +183,10 @@ async def get_product(
         ProductDetail: The PDP response.
 
     Raises:
-        HTTPException: 404 if the product is not found / inactive.
+        NotFoundError: 404 if the product is not found / inactive.
     """
     service = CatalogService(session)
-    try:
-        return await service.get_product(slug, lang)
-    except NotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    return await service.get_product(slug, lang)
 
 
 @router.get("/products/{slug}/related", response_model=list[ProductCardOut])

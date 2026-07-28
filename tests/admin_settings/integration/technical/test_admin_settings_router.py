@@ -2,20 +2,24 @@
 
 The endpoint coroutines are invoked *directly* (not via the ASGI app) so their
 full bodies — including the response-model construction on the ``return`` line
-and the ``StaffNotFoundError`` / ``StaffConflictError`` → ``HTTPException``
-mapping — run inside the traced test coroutine. Going through the ASGI transport
-runs the endpoint body in Starlette's worker context, which the coverage tracer
-does not follow, so those return/except lines would otherwise read as missed.
+and the ``StaffNotFoundError`` / ``StaffConflictError`` propagation — run inside
+the traced test coroutine. Going through the ASGI transport runs the endpoint
+body in Starlette's worker context, which the coverage tracer does not follow,
+so those return lines would otherwise read as missed.
 
 Run with ``EVIX_TEST_DB=evix_test_admin_settings``.
 """
 
 import pytest
-from fastapi import HTTPException, status
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.admin_settings import create_staff, list_staff, update_staff
 from app.schemas.admin_settings import StaffCreate, StaffUpdate
+from app.services.admin_settings_service import (
+    StaffConflictError,
+    StaffNotFoundError,
+)
 from tests.factories import StaffFactory, persist
 
 pytestmark = pytest.mark.asyncio
@@ -60,17 +64,17 @@ class TestAdminStaffRouterSuccess:
 
 
 class TestAdminStaffRouterErrors:
-    """Error mapping of the ``update_staff`` endpoint (404 / 409)."""
+    """Domain errors propagated by the ``update_staff`` endpoint (404 / 409)."""
 
-    async def test_update_missing_user_maps_to_404(
+    async def test_update_missing_user_raises_not_found(
         self, db_session: AsyncSession, staff_user
     ) -> None:
-        """A missing user id is mapped to a 404 with a ``not_found`` code."""
+        """A missing user id raises a 404 ``StaffNotFoundError`` (``not_found``)."""
         # Arrange: an update targeting a non-existent id.
         payload = StaffUpdate(is_active=False)
 
-        # Act / Assert: the endpoint raises a 404 HTTPException.
-        with pytest.raises(HTTPException) as exc_info:
+        # Act / Assert: the endpoint propagates the domain error.
+        with pytest.raises(StaffNotFoundError) as exc_info:
             await update_staff(
                 user_id=_MISSING_USER_ID,
                 payload=payload,
@@ -78,21 +82,21 @@ class TestAdminStaffRouterErrors:
                 session=db_session,
             )
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND, (
-            "missing user must map to 404"
+            "missing user must carry a 404 status code"
         )
-        assert exc_info.value.detail["code"] == "not_found", (
-            "404 detail must carry the not_found code"
+        assert exc_info.value.code == "not_found", (
+            "error must carry the not_found code"
         )
 
-    async def test_update_last_active_staff_maps_to_409(
+    async def test_update_last_active_staff_raises_conflict(
         self, db_session: AsyncSession, staff_user
     ) -> None:
-        """Deactivating the last active staff is mapped to a 409 conflict."""
+        """Deactivating the last active staff raises a 409 ``StaffConflictError``."""
         # Arrange: the seed ``staff_user`` is the only active staff account.
         payload = StaffUpdate(is_active=False)
 
-        # Act / Assert: the endpoint raises a 409 HTTPException.
-        with pytest.raises(HTTPException) as exc_info:
+        # Act / Assert: the endpoint propagates the domain error.
+        with pytest.raises(StaffConflictError) as exc_info:
             await update_staff(
                 user_id=staff_user.id,
                 payload=payload,
@@ -100,10 +104,10 @@ class TestAdminStaffRouterErrors:
                 session=db_session,
             )
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT, (
-            "last-active-staff removal must map to 409"
+            "last-active-staff removal must carry a 409 status code"
         )
-        assert exc_info.value.detail["code"] == "conflict", (
-            "409 detail must carry the conflict code"
+        assert exc_info.value.code == "conflict", (
+            "error must carry the conflict code"
         )
 
     async def test_update_non_last_staff_returns_serialized_item(

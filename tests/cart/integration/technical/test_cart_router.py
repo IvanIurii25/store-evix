@@ -33,8 +33,8 @@ _ABSENT_PRODUCT_ID: int = 999
 _HTTP_OK: int = 200
 _HTTP_CREATED: int = 201
 _HTTP_NOT_FOUND: int = 404
-# Unified error envelope code for HTTPException.
-_ERROR_CODE: str = "http_error"
+# Unified error envelope code for the item-not-found domain error.
+_ERROR_CODE: str = "item_not_found"
 
 
 async def _guest_add(client: AsyncClient, qty: int) -> AsyncClient:

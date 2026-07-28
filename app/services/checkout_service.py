@@ -19,10 +19,12 @@ import logging
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import normalize_lang
 from app.core.config import settings
+from app.core.errors import DomainError
 from app.models.cart import Cart
 from app.models.order import Order, OrderItem
 from app.models.user import Address
@@ -49,16 +51,33 @@ _CARD: str = "card"
 _ZERO: Decimal = Decimal("0")
 
 
-class CheckoutError(Exception):
-    """Base class for checkout domain errors (mapped to HTTP by the router)."""
+class CheckoutError(DomainError):
+    """Base class for checkout domain errors (rendered via the unified envelope).
+
+    Each leaf declares ``status_code`` + ``code``; the registered
+    :class:`~app.core.errors.DomainError` handler emits the
+    ``{error:{code,message,details?}}`` envelope with the leaf's status.
+    """
 
 
 class EmptyCartError(CheckoutError):
-    """The caller has no cart, or its cart has no purchasable lines (§9.1)."""
+    """The caller has no cart, or its cart has no purchasable lines (§9.1).
+
+    Mapped to HTTP 400 with code ``empty_cart``.
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "empty_cart"
 
 
 class DeliveryAddressRequiredError(CheckoutError):
-    """Courier delivery was requested without a ``delivery_address_id`` (§9.4)."""
+    """Courier delivery was requested without a ``delivery_address_id`` (§9.4).
+
+    Mapped to HTTP 422 with code ``delivery_address_required``.
+    """
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "delivery_address_required"
 
 
 class DeliveryAddressForbiddenError(CheckoutError):
@@ -66,9 +85,12 @@ class DeliveryAddressForbiddenError(CheckoutError):
 
     Raised when the id resolves to no address the caller owns — the address is
     missing, belongs to another user, or the caller is a guest (guests have no
-    saved addresses). Mapped to HTTP 403; existence is never leaked (the same
-    error covers "not found" and "not yours").
+    saved addresses). Mapped to HTTP 403 with code ``delivery_address_forbidden``;
+    existence is never leaked (the same error covers "not found" and "not yours").
     """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "delivery_address_forbidden"
 
 
 # A resolved courier snapshot: ``(name, city, street, zip)``. All ``None`` when
@@ -82,13 +104,20 @@ _EMPTY_SNAPSHOT: _DeliverySnapshot = (None, None, None, None)
 class OutOfStockError(CheckoutError):
     """A line's requested quantity exceeds available stock (§9.2 / §9.6).
 
-    Carries the offending ``product_id`` so the router can surface it in the
-    error ``details``. Mapped to HTTP 409 with code ``out_of_stock``.
+    Mapped to HTTP 409 with code ``out_of_stock``. Carries the offending
+    ``product_id`` both as an attribute and in the envelope ``details``.
     """
 
+    status_code = status.HTTP_409_CONFLICT
+    code = "out_of_stock"
+
     def __init__(self, product_id: int) -> None:
+        """Store the offending product id and surface it in ``details``."""
         self.product_id = product_id
-        super().__init__(f"Insufficient stock for product {product_id}")
+        super().__init__(
+            f"Insufficient stock for product {product_id}",
+            details={"product_id": product_id},
+        )
 
 
 class ProductNotFoundError(CheckoutError):
@@ -96,12 +125,19 @@ class ProductNotFoundError(CheckoutError):
 
     Raised by :meth:`CheckoutService.quick_buy` when the product is missing or
     inactive. Mapped to HTTP 404 with code ``product_not_found``. Carries the
-    offending ``product_id`` for the error ``details``.
+    offending ``product_id`` both as an attribute and in the envelope ``details``.
     """
 
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "product_not_found"
+
     def __init__(self, product_id: int) -> None:
+        """Store the offending product id and surface it in ``details``."""
         self.product_id = product_id
-        super().__init__(f"Product {product_id} not found or unavailable")
+        super().__init__(
+            f"Product {product_id} not found or unavailable",
+            details={"product_id": product_id},
+        )
 
 
 class _PricedLine:

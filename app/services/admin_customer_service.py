@@ -7,14 +7,17 @@ the detail view (profile + addresses + order history + stats).
 
 Returns raw domain objects (models, the :class:`CustomerStats` dataclass, and the
 :class:`CustomerDetailData` bundle); the router maps them to response schemas.
-Raises :class:`CustomerNotFoundError` (mapped to 404) for an unknown id.
+Raises :class:`CustomerNotFoundError` (a ``DomainError`` rendered as 404
+``not_found``) for an unknown id.
 """
 
 from dataclasses import dataclass
 from decimal import Decimal
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import DomainError
 from app.models.order import Order
 from app.models.user import Address, AppUser
 from app.repositories.admin_customer_repo import (
@@ -28,9 +31,10 @@ _ZERO_STATS = CustomerStats(
 )
 
 
-class CustomerNotFoundError(Exception):
-    """No customer exists for the requested id (mapped to 404 by the router)."""
+class CustomerNotFoundError(DomainError):
+    """No customer exists for the requested id (rendered as 404 ``not_found``)."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 

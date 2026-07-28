@@ -23,8 +23,10 @@ The service owns no HTTP knowledge and no SQL (that is :class:`PromoRepository`)
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import DomainError
 from app.models.promo import DISCOUNT_TYPES, PromoCode
 from app.repositories.promo_repo import PromoRepository
 from app.schemas.admin_promo import PromoCreate, PromoUpdate
@@ -40,8 +42,13 @@ _PERCENT: str = "percent"
 _FIXED: str = "fixed"
 
 
-class PromoError(Exception):
-    """Base class for promo domain errors (mapped to HTTP by the router)."""
+class PromoError(DomainError):
+    """Base class for promo domain errors (rendered via the unified envelope).
+
+    Each leaf declares ``status_code`` + ``code``; the registered
+    :class:`~app.core.errors.DomainError` handler emits the
+    ``{error:{code,message}}`` envelope with the leaf's status.
+    """
 
     code: str = "promo_error"
 
@@ -49,42 +56,49 @@ class PromoError(Exception):
 class PromoInvalidError(PromoError):
     """The code is unknown or disabled (mapped to 404)."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "promo_invalid"
 
 
 class PromoExpiredError(PromoError):
     """Now is outside the code's validity window (mapped to 400)."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
     code = "promo_expired"
 
 
 class PromoMinOrderError(PromoError):
     """The subtotal is below the code's minimum order total (mapped to 400)."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
     code = "promo_min_order"
 
 
 class PromoUsageLimitError(PromoError):
     """The code's redemption limit is exhausted (mapped to 409)."""
 
+    status_code = status.HTTP_409_CONFLICT
     code = "promo_usage_limit"
 
 
 class PromoNotFoundError(PromoError):
     """The referenced coupon does not exist (admin path, mapped to 404)."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class PromoConflictError(PromoError):
     """An admin write violates an invariant (duplicate code, mapped to 409)."""
 
+    status_code = status.HTTP_409_CONFLICT
     code = "conflict"
 
 
 class PromoValidationError(PromoError):
     """An admin write carries an invalid value (mapped to 422)."""
 
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     code = "validation_error"
 
 

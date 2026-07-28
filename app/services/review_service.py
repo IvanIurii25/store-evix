@@ -16,7 +16,9 @@ Sits between the routers and :class:`ReviewRepository`. Owns the domain rules:
 The cursor is an opaque base64 token carrying the sort key + last id, mirroring
 the catalog listing cursor (§5.3) so a token can never be replayed across sorts.
 
-No HTTP knowledge: the routers map the raised exceptions.
+Domain failures raise :class:`ReviewError` (a :class:`DomainError`); the shared
+handler renders them into the unified envelope with the class ``status_code`` /
+``code`` — the routers no longer map them.
 """
 
 import base64
@@ -24,7 +26,10 @@ import binascii
 import json
 from datetime import UTC, datetime
 
+from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.errors import DomainError
 
 from app.models.catalog import Product
 from app.models.review import (
@@ -49,8 +54,8 @@ PUBLIC_PAGE_SIZE: int = 10
 ADMIN_PAGE_SIZE: int = 20
 
 
-class ReviewError(Exception):
-    """Base class for review domain errors (mapped to HTTP by the router)."""
+class ReviewError(DomainError):
+    """Base class for review domain errors rendered via the unified envelope."""
 
     code: str = "review_error"
 
@@ -58,18 +63,21 @@ class ReviewError(Exception):
 class ReviewNotFoundError(ReviewError):
     """The referenced product or review does not exist."""
 
+    status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class ReviewForbiddenError(ReviewError):
     """The caller is not the author of the review they tried to modify."""
 
+    status_code = status.HTTP_403_FORBIDDEN
     code = "forbidden"
 
 
 class InvalidCursorError(ReviewError):
     """The supplied review-list cursor is malformed or sort-mismatched."""
 
+    status_code = status.HTTP_400_BAD_REQUEST
     code = "invalid_cursor"
 
 

@@ -2,8 +2,11 @@
 
 Thin back-office router entirely behind ``Depends(current_staff)`` (JWT +
 ``is_staff``; a non-staff caller gets 403 from the dependency). It delegates to
-:class:`~app.services.promo_service.PromoService` and maps domain errors to HTTP
-status codes via the unified error envelope. No business logic and no SQL here.
+:class:`~app.services.promo_service.PromoService`; the promo domain errors it
+raises are :class:`DomainError` subclasses rendered by the app's registered
+handler into the unified ``{error:{code,message}}`` envelope (each leaf carries
+its own status + code), so the router does not catch them. No business logic and
+no SQL here.
 
 Endpoints (the ``/api/v1`` prefix is added by the integrator when mounting):
 
@@ -14,7 +17,7 @@ Endpoints (the ``/api/v1`` prefix is added by the integrator when mounting):
 * ``DELETE /admin/promo/{id}``   — delete a coupon.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
@@ -26,12 +29,7 @@ from app.schemas.admin_promo import (
     PromoOut,
     PromoUpdate,
 )
-from app.services.promo_service import (
-    PromoConflictError,
-    PromoNotFoundError,
-    PromoService,
-    PromoValidationError,
-)
+from app.services.promo_service import PromoService
 
 router = APIRouter(
     prefix="/admin/promo",
@@ -56,19 +54,15 @@ async def create_promo(
     _staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
 ) -> PromoOut:
-    """Create a coupon."""
-    try:
-        promo = await PromoService(session).create_promo(payload)
-    except PromoValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
-    except PromoConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    """Create a coupon.
+
+    Raises:
+        PromoValidationError: 422 ``validation_error`` for an inconsistent
+            definition.
+        PromoConflictError: 409 ``conflict`` when the code already exists. Both
+            are rendered by the registered :class:`DomainError` handler.
+    """
+    promo = await PromoService(session).create_promo(payload)
     return PromoOut.model_validate(promo)
 
 
@@ -78,14 +72,13 @@ async def get_promo(
     _staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
 ) -> PromoOut:
-    """Return one coupon by id."""
-    try:
-        promo = await PromoService(session).get_promo(promo_id)
-    except PromoNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    """Return one coupon by id.
+
+    Raises:
+        PromoNotFoundError: 404 ``not_found`` when no such coupon exists
+            (rendered by the registered :class:`DomainError` handler).
+    """
+    promo = await PromoService(session).get_promo(promo_id)
     return PromoOut.model_validate(promo)
 
 
@@ -96,24 +89,16 @@ async def update_promo(
     _staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
 ) -> PromoOut:
-    """Apply a partial update to a coupon."""
-    try:
-        promo = await PromoService(session).update_promo(promo_id, payload)
-    except PromoNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
-    except PromoValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
-    except PromoConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    """Apply a partial update to a coupon.
+
+    Raises:
+        PromoNotFoundError: 404 ``not_found`` when the coupon does not exist.
+        PromoValidationError: 422 ``validation_error`` for an inconsistent
+            resulting definition.
+        PromoConflictError: 409 ``conflict`` when a new code collides. All are
+            rendered by the registered :class:`DomainError` handler.
+    """
+    promo = await PromoService(session).update_promo(promo_id, payload)
     return PromoOut.model_validate(promo)
 
 
@@ -123,11 +108,10 @@ async def delete_promo(
     _staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Delete a coupon (order history keeps its code snapshot)."""
-    try:
-        await PromoService(session).delete_promo(promo_id)
-    except PromoNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    """Delete a coupon (order history keeps its code snapshot).
+
+    Raises:
+        PromoNotFoundError: 404 ``not_found`` when the coupon does not exist
+            (rendered by the registered :class:`DomainError` handler).
+    """
+    await PromoService(session).delete_promo(promo_id)

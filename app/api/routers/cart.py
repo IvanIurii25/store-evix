@@ -2,10 +2,11 @@
 
 Thin router: it resolves the caller (authenticated user via ``guest_or_user``, or
 a guest via the ``session_token`` cookie), delegates to
-:class:`~app.services.cart_service.CartService`, serializes the result, and maps
-domain errors to HTTP status codes (the app's HTTPException handler renders the
-unified ``{error:{code,message,details?}}`` envelope). No business logic and no
-SQL live here.
+:class:`~app.services.cart_service.CartService`, and serializes the result. Domain
+errors raised by the service (subclasses of :class:`~app.core.errors.DomainError`)
+are rendered by the global handler into the unified
+``{error:{code,message,details?}}`` envelope. No business logic and no SQL live
+here.
 
 Guest identity (§2.3): a guest is tracked by an opaque ``session_token`` cookie.
 On the first write from a cookie-less guest we mint a token and set it on the
@@ -18,7 +19,7 @@ Mounted without the ``/api/v1`` prefix — the integrator adds it.
 
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user, guest_or_user
@@ -26,11 +27,7 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.models.user import AppUser
 from app.schemas.cart import AddItem, CartOut, UpdateItem
-from app.services.cart_service import (
-    CartService,
-    ItemNotFoundError,
-    ProductNotAvailableError,
-)
+from app.services.cart_service import CartService
 
 router = APIRouter(prefix="/cart", tags=["cart"])
 
@@ -125,7 +122,7 @@ async def add_item(
         CartOut: The re-rendered cart.
 
     Raises:
-        HTTPException: 404 if the product is missing or inactive.
+        ProductNotAvailableError: 404 if the product/variant is missing or inactive.
     """
     user_id = user.id if user is not None else None
     token: UUID | None = None
@@ -135,14 +132,9 @@ async def add_item(
             token = uuid4()
         _set_session_cookie(response, token)
     service = CartService(session)
-    try:
-        return await service.add_item(
-            user_id, token, data.product_id, data.qty, lang, data.variant_id
-        )
-    except ProductNotAvailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    return await service.add_item(
+        user_id, token, data.product_id, data.qty, lang, data.variant_id
+    )
 
 
 @router.patch("/items/{product_id}", response_model=CartOut)
@@ -172,19 +164,14 @@ async def update_item(
         CartOut: The re-rendered cart.
 
     Raises:
-        HTTPException: 404 if the cart or line does not exist.
+        ItemNotFoundError: 404 if the cart or line does not exist.
     """
     user_id = user.id if user is not None else None
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
-    try:
-        return await service.update_item(
-            user_id, token, product_id, data.qty, lang, variant_id
-        )
-    except ItemNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    return await service.update_item(
+        user_id, token, product_id, data.qty, lang, variant_id
+    )
 
 
 @router.delete("/items/{product_id}", response_model=CartOut)
@@ -212,17 +199,12 @@ async def remove_item(
         CartOut: The re-rendered cart.
 
     Raises:
-        HTTPException: 404 if the cart or line does not exist.
+        ItemNotFoundError: 404 if the cart or line does not exist.
     """
     user_id = user.id if user is not None else None
     token = None if user is not None else _read_session_token(request)
     service = CartService(session)
-    try:
-        return await service.remove_item(user_id, token, product_id, lang, variant_id)
-    except ItemNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    return await service.remove_item(user_id, token, product_id, lang, variant_id)
 
 
 @router.post("/merge", response_model=CartOut)

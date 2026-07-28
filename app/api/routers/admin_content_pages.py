@@ -2,15 +2,16 @@
 
 Thin back-office router entirely behind :func:`~app.api.deps.current_staff`
 (``is_staff`` → 401 for anonymous / 403 for non-staff). It validates input via
-Pydantic, delegates to
-:class:`~app.services.content_page_service.ContentPageService`, and maps the
-domain errors to the unified error envelope. No business logic and no SQL here.
+Pydantic and delegates to
+:class:`~app.services.content_page_service.ContentPageService`; the service's
+domain errors are rendered into the unified envelope by the registered handler.
+No business logic and no SQL here.
 
 Prefix is ``/admin/content-pages`` (the integrator mounts the router under
 ``/api/v1``).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
@@ -22,40 +23,13 @@ from app.schemas.content_page import (
     ContentPageCreate,
     ContentPageUpdate,
 )
-from app.services.content_page_service import (
-    ContentPageConflictError,
-    ContentPageNotFoundError,
-    ContentPageService,
-)
+from app.services.content_page_service import ContentPageService
 
 router = APIRouter(
     prefix="/admin/content-pages",
     tags=["admin-content-pages"],
     dependencies=[Depends(current_staff)],
 )
-
-
-def _raise_http(exc: Exception) -> None:
-    """Translate a content-page domain error into an :class:`HTTPException`.
-
-    Args:
-        exc: The domain exception raised by the service.
-
-    Raises:
-        HTTPException: 404 for not-found, 409 for a slug conflict; anything else
-            is re-raised untouched.
-    """
-    if isinstance(exc, ContentPageNotFoundError):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": str(exc)},
-        ) from exc
-    if isinstance(exc, ContentPageConflictError):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "conflict", "message": str(exc)},
-        ) from exc
-    raise exc
 
 
 def _to_out(page: ContentPage) -> ContentPageAdminOut:
@@ -84,10 +58,7 @@ async def create_page(
     session: AsyncSession = Depends(get_session),
 ) -> ContentPageAdminOut:
     """Create a content page with both-language translations (409 on dup slug)."""
-    try:
-        page = await ContentPageService(session).create_page(payload)
-    except ContentPageConflictError as exc:
-        _raise_http(exc)
+    page = await ContentPageService(session).create_page(payload)
     return _to_out(page)
 
 
@@ -98,10 +69,7 @@ async def get_page(
     session: AsyncSession = Depends(get_session),
 ) -> ContentPageAdminOut:
     """Return one content page with all translations (404 if absent)."""
-    try:
-        page = await ContentPageService(session).get_page_admin(page_id)
-    except ContentPageNotFoundError as exc:
-        _raise_http(exc)
+    page = await ContentPageService(session).get_page_admin(page_id)
     return _to_out(page)
 
 
@@ -113,10 +81,7 @@ async def update_page(
     session: AsyncSession = Depends(get_session),
 ) -> ContentPageAdminOut:
     """Fully update a content page (404 if absent; 409 on slug clash)."""
-    try:
-        page = await ContentPageService(session).update_page(page_id, payload)
-    except (ContentPageNotFoundError, ContentPageConflictError) as exc:
-        _raise_http(exc)
+    page = await ContentPageService(session).update_page(page_id, payload)
     return _to_out(page)
 
 
@@ -127,7 +92,4 @@ async def delete_page(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Delete a content page and its translations (404 if absent)."""
-    try:
-        await ContentPageService(session).delete_page(page_id)
-    except ContentPageNotFoundError as exc:
-        _raise_http(exc)
+    await ContentPageService(session).delete_page(page_id)
