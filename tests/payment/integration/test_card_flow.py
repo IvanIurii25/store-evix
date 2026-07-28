@@ -45,14 +45,20 @@ async def _checkout_card(client: AsyncClient) -> dict:
     return resp.json()
 
 
-def _callback_body(stub: StubMaibClient, *, order_number: str, status: str) -> dict:
+def _callback_body(
+    stub: StubMaibClient,
+    *,
+    order_number: str,
+    status: str,
+    amount: float = 100.0,
+) -> dict:
     """Build a signed callback payload for the stub's pay id."""
     result = {
         "payId": stub.last_pay_id,
         "orderId": order_number,
         "status": status,
         "statusCode": "000",
-        "amount": 100.0,
+        "amount": amount,
         "currency": "MDL",
     }
     return {"result": result, "signature": stub.sign(result)}
@@ -103,6 +109,44 @@ async def test_callback_ok_marks_order_paid(
         )
     ).scalar_one()
     assert payment.status == "ok"
+
+
+async def test_callback_wrong_amount_still_settles(
+    client: AsyncClient,
+    add_product,
+    stub_maib: StubMaibClient,
+    db_session: AsyncSession,
+) -> None:
+    """A valid-signature callback whose amount != order.total still settles.
+
+    ``handle_callback`` intentionally does not cross-check the callback amount
+    against ``order.total`` — the HMAC signature is the trust boundary (a valid
+    signature means maib produced the payload). This characterises that
+    defense-in-depth assumption: forging the amount requires forging the
+    signature, which is rejected on its own (see the bad-signature test).
+    """
+    await add_product(1, price=Decimal("100.00"), code="CARDAMT")
+    await _seed_cart(client, 1)
+    order = await _checkout_card(client)
+
+    # Correctly-signed OK callback that echoes the wrong amount (order.total=100).
+    resp = await client.post(
+        "/api/v1/payments/maib/callback",
+        json=_callback_body(
+            stub_maib, order_number=order["number"], status="OK", amount=1.0
+        ),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"accepted": True}
+
+    row = (
+        await db_session.execute(
+            select(Order).where(Order.number == order["number"])
+        )
+    ).scalar_one()
+    assert row.payment_status == "paid", (
+        "signature is the trust boundary; the amount is not independently verified"
+    )
 
 
 async def test_callback_not_ok_cancels_and_returns_stock(

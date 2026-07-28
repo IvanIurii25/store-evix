@@ -158,6 +158,51 @@ async def test_search_no_results(seed, client):
     assert body["data"] == []
 
 
+@pytest.mark.asyncio
+async def test_search_falls_back_to_postgres_when_elastic_fails(
+    seed, client, monkeypatch
+):
+    """With ES selected but failing, search transparently falls back to PG FTS.
+
+    Covers the ``except`` branch in ``SearchService.search`` (plan §3/§8): a
+    failing ES round-trip must never surface an error — the storefront still
+    gets the Postgres-ranked results so search does not go dark on an ES
+    incident.
+    """
+    await seed["build_tree"]()
+    session = seed["session"]
+    service: CatalogService = seed["service"]
+    await seed["add_product"](
+        session,
+        product_id=140,
+        category_id=2,
+        code="ESFB-1",
+        price=Decimal("999.00"),
+        qty=1,
+        slugs={"ru": "esfb-ru", "ro": "esfb-ro"},
+        names={"ru": "Микроволновка", "ro": "Cuptor"},
+    )
+    await session.flush()
+    await service.rebuild_card(140)
+
+    # Select the ES backend, then make the ES search path raise mid-request.
+    monkeypatch.setattr("app.core.config.settings.search_backend", "elastic")
+
+    async def _boom(self, *args, **kwargs):
+        raise RuntimeError("es down")
+
+    monkeypatch.setattr(
+        "app.services.search_service.SearchService._search_elastic", _boom
+    )
+
+    resp = await client.get("/api/v1/search?q=микроволновка&lang=ru")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1, "must fall back to Postgres FTS, not error out"
+    assert body["data"][0]["card"]["product_id"] == 140
+
+
 async def _seed_facet_products(seed) -> None:
     """Two active phones (RAM 8/16) + one inactive, with brand+ram attributes."""
     session = seed["session"]
