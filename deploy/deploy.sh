@@ -24,6 +24,10 @@ echo "== restart cloudflared (re-resolve origin IPs) =="
 $COMPOSE --profile tunnel restart cloudflared
 
 echo "== status =="; $COMPOSE ps
+# cloudflared just restarted; give the tunnel a few seconds to reconnect and
+# re-resolve the new app/front IPs before smoking, or the curls catch it
+# mid-reconnect and print false 502/530.
+echo "== wait for tunnel to settle =="; sleep 8
 echo "== smoke =="
 curl -sS -o /dev/null -w "https://shop.evix.md/api/v1/health -> %{http_code}\n" https://shop.evix.md/api/v1/health || true
 curl -sS -o /dev/null -w "https://shop.evix.md/ro -> %{http_code}\n" https://shop.evix.md/ro || true
