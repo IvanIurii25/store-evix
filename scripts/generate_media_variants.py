@@ -8,9 +8,9 @@ variants — ``media/<name>_<W>.webp`` for each ``W`` in :data:`WIDTHS` — usin
 front's ``srcset`` URLs never 404.
 
 Originals vs variants: a key ``media/<name>.<ext>`` is an *original* when ``ext``
-is one of jpg/jpeg/png (case-insensitive) **and** ``<name>`` does not already end
-with a ``_<digits>`` suffix. Anything ``.webp`` (or ``<name>_<digits>.<ext>``) is
-treated as a generated variant and skipped as a source.
+is one of jpg/jpeg/png/webp/avif (case-insensitive) **and** ``<name>`` does not
+already end with a ``_<digits>`` suffix. A ``<name>_<digits>.<ext>`` key (e.g. a
+generated ``<name>_800.webp`` variant) is skipped as a source.
 
 Idempotent: an original whose four variant keys already exist is skipped (unless
 ``--force``). Variants are written with a long-lived immutable ``Cache-Control``.
@@ -51,7 +51,13 @@ WIDTHS: tuple[int, ...] = RESPONSIVE_WIDTHS
 _MEDIA_PREFIX: str = "media/"
 
 # Raster extensions we treat as backfillable originals (case-insensitive).
-_ORIGINAL_EXTENSIONS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
+# ``.webp``/``.avif`` originals (from historical bulk imports that predated the
+# variant pipeline) are included: a bare ``<name>.webp`` is an original, while a
+# ``<name>_<digits>.webp`` is a generated variant and is excluded by the
+# ``_VARIANT_SUFFIX_RE`` stem check in :func:`_is_original_key`.
+_ORIGINAL_EXTENSIONS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".avif"}
+)
 
 # Cache header for the immutable, content-addressed WebP variants (1 year).
 _VARIANT_CACHE_CONTROL: str = "public, max-age=31536000, immutable"
@@ -69,6 +75,7 @@ class _Summary:
         self.processed = 0
         self.written = 0
         self.skipped = 0
+        self.failed = 0
 
     def render(self) -> str:
         """Return the final one-line summary of the run.
@@ -80,7 +87,8 @@ class _Summary:
             f"done: originals_scanned={self.scanned} "
             f"originals_processed={self.processed} "
             f"variants_written={self.written} "
-            f"originals_skipped={self.skipped}"
+            f"originals_skipped={self.skipped} "
+            f"originals_failed={self.failed}"
         )
 
 
@@ -120,9 +128,10 @@ def _is_original_key(key: str) -> bool:
         key: The full S3 object key (e.g. ``media/abc.jpg``).
 
     Returns:
-        bool: ``True`` for ``media/<name>.<jpg|jpeg|png>`` whose ``<name>`` does
-        not end with a ``_<digits>`` variant suffix; ``False`` otherwise
-        (including any ``.webp`` object).
+        bool: ``True`` for ``media/<name>.<ext>`` (``ext`` in
+        :data:`_ORIGINAL_EXTENSIONS` — jpg/jpeg/png/webp/avif) whose ``<name>``
+        does not end with a ``_<digits>`` variant suffix; ``False`` otherwise
+        (including any generated ``<name>_<digits>.webp`` variant).
     """
     path = PurePosixPath(key)
     if path.suffix.lower() not in _ORIGINAL_EXTENSIONS:
@@ -232,21 +241,26 @@ async def _process_original(
         logger.info("would generate for %s -> %s", key, ", ".join(planned))
         return
 
-    response = await client.get_object(Bucket=settings.s3_bucket, Key=key)
-    async with response["Body"] as body:
-        data = await body.read()
+    try:
+        response = await client.get_object(Bucket=settings.s3_bucket, Key=key)
+        async with response["Body"] as body:
+            data = await body.read()
 
-    variants = await asyncio.to_thread(generate_fixed_webp_set, data, WIDTHS)
+        variants = await asyncio.to_thread(generate_fixed_webp_set, data, WIDTHS)
 
-    for width in WIDTHS:
-        await client.put_object(
-            Bucket=settings.s3_bucket,
-            Key=_variant_key(base, width),
-            Body=variants[width],
-            ContentType="image/webp",
-            CacheControl=_VARIANT_CACHE_CONTROL,
-        )
-        summary.written += 1
+        for width in WIDTHS:
+            await client.put_object(
+                Bucket=settings.s3_bucket,
+                Key=_variant_key(base, width),
+                Body=variants[width],
+                ContentType="image/webp",
+                CacheControl=_VARIANT_CACHE_CONTROL,
+            )
+            summary.written += 1
+    except Exception:  # noqa: BLE001 — one bad original must not abort the batch
+        summary.failed += 1
+        logger.exception("failed to process %s", key)
+        return
 
     summary.processed += 1
     logger.info("generated %d variants for %s", len(WIDTHS), key)
