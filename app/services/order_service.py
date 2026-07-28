@@ -23,7 +23,8 @@ from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DomainError
-from app.models.order import Order
+from app.models.order import Order, OrderItem
+from app.models.user import AppUser
 from app.repositories.order_repo import OrderRepository
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,13 @@ class IllegalTransitionError(OrderError):
     code = "illegal_transition"
 
 
+class OrderNotFoundError(OrderError):
+    """No order exists for the requested number (rendered as a 404 envelope)."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "order_not_found"
+
+
 class OrderService:
     """Enforced order state machine bound to one session (§8)."""
 
@@ -69,6 +77,80 @@ class OrderService:
         """
         self.session = session
         self.repo = OrderRepository(session)
+
+    # ------------------------------------------------------------------ #
+    # Read side (customer-facing, §4 / §9)
+    # ------------------------------------------------------------------ #
+    async def list_for_user(
+        self, user_id: int
+    ) -> list[tuple[Order, list[OrderItem]]]:
+        """Return the user's orders (newest first) paired with their lines (§4).
+
+        Lines are fetched in a single batched query (no per-order N+1).
+
+        Args:
+            user_id: The authenticated user's id.
+
+        Returns:
+            list: ``(order, items)`` tuples, newest order first.
+        """
+        orders = await self.repo.list_orders_for_user(user_id)
+        items_by_order = await self.repo.list_items_for_orders(
+            [order.id for order in orders]
+        )
+        return [(order, items_by_order[order.id]) for order in orders]
+
+    async def get_for_user(
+        self,
+        number: str,
+        user: AppUser | None,
+        email: str | None,
+    ) -> tuple[Order, list[OrderItem]]:
+        """Load an order the caller may view (JWT owner or matching email) (§9).
+
+        A missing order and one the caller is not authorized for are
+        indistinguishable — both raise :class:`OrderNotFoundError` — so order
+        existence is never leaked to a guest or a different user.
+
+        Args:
+            number: The order number.
+            user: The authenticated user, or ``None`` for a guest.
+            email: The email to match for guest lookup, or ``None`` for
+                owner-only access.
+
+        Returns:
+            tuple: ``(order, items)``.
+
+        Raises:
+            OrderNotFoundError: If the order is absent or not authorized to the
+                caller.
+        """
+        order = await self.repo.get_order_by_number(number)
+        if order is None or not self._authorized(order, user, email):
+            raise OrderNotFoundError(f"Order not found: {number}")
+        items = (await self.repo.list_items_for_orders([order.id]))[order.id]
+        return order, items
+
+    @staticmethod
+    def _authorized(
+        order: Order, user: AppUser | None, email: str | None
+    ) -> bool:
+        """Return whether the caller may view ``order`` (JWT owner or guest email).
+
+        Args:
+            order: The order being accessed.
+            user: The authenticated user, or ``None``.
+            email: The email supplied for guest lookup, or ``None``.
+
+        Returns:
+            bool: ``True`` if the caller owns the order (by user id) or supplied
+                the matching guest-order email.
+        """
+        if user is not None and order.user_id == user.id:
+            return True
+        if email is not None and order.email.lower() == email.lower():
+            return True
+        return False
 
     async def transition(
         self,

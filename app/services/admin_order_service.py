@@ -20,20 +20,19 @@ a number is unknown; illegal transitions surface as
 machine (mapped to 409 by the router).
 """
 
-from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order import Order, OrderItem
 from app.repositories.admin_order_repo import AdminOrderRepository
 from app.repositories.order_repo import OrderRepository
-from app.services.order_service import OrderError, OrderService
+from app.services.order_service import (
+    OrderNotFoundError,
+    OrderService,
+)
 
-
-class OrderNotFoundError(OrderError):
-    """No order exists for the requested number (rendered as a 404 envelope)."""
-
-    status_code = status.HTTP_404_NOT_FOUND
-    code = "order_not_found"
+# Re-exported for the admin router / tests that import it from here; the
+# canonical definition lives next to the order state machine.
+__all__ = ["AdminOrderService", "OrderNotFoundError"]
 
 
 class AdminOrderService:
