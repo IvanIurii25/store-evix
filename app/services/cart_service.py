@@ -380,7 +380,7 @@ class CartService:
             ProductNotAvailableError: On any missing/inactive/mismatched entity or
                 a violated required/forbidden-variant rule.
         """
-        product = await self.session.get(Product, product_id)
+        product = await self.catalog.get_product(product_id)
         if product is None or not product.is_active:
             raise ProductNotAvailableError("Product not available")
         if product.has_variants:

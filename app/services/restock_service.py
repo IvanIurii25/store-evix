@@ -27,8 +27,9 @@ from app.api.lang import normalize_lang
 from app.core.config import settings
 from app.core.email import send_restock_notification
 from app.core.errors import DomainError
-from app.models.catalog import Product, ProductTranslation
+from app.models.catalog import ProductTranslation
 from app.models.restock import STATUS_ACTIVE, RestockSubscription
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.restock_repo import RestockRepository
 from app.schemas.restock import DemandItem, RestockSubscriptionItem
 
@@ -75,6 +76,7 @@ class RestockService:
         """
         self.session = session
         self.repo = RestockRepository(session)
+        self.catalog = CatalogRepository(session)
 
     async def subscribe(
         self,
@@ -97,7 +99,7 @@ class RestockService:
             RestockUnsupportedError: If the product is variable (v1 opt-out).
             ProductInStockError: If the product is currently in stock (``qty>0``).
         """
-        product = await self.session.get(Product, product_id)
+        product = await self.catalog.get_product(product_id)
         if product is None:
             raise RestockNotFoundError(f"Product {product_id} not found")
         # v1: variable products opt out of restock — stock is per-variant, so a

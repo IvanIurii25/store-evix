@@ -30,13 +30,12 @@ from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DomainError
-
-from app.models.catalog import Product
 from app.models.review import (
     MAX_RATING,
     STATUS_PENDING,
     Review,
 )
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.review_repo import ReviewRepository
 from app.schemas.review import (
     AdminReviewList,
@@ -132,6 +131,7 @@ class ReviewService:
         """
         self.session = session
         self.repo = ReviewRepository(session)
+        self.catalog = CatalogRepository(session)
 
     # ------------------------------------------------------------------ #
     # Customer path
@@ -156,7 +156,7 @@ class ReviewService:
         Raises:
             ReviewNotFoundError: If the product does not exist.
         """
-        product = await self.session.get(Product, payload.product_id)
+        product = await self.catalog.get_product(payload.product_id)
         if product is None:
             raise ReviewNotFoundError(f"Product {payload.product_id} not found")
 
