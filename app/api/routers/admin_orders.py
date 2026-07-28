@@ -23,10 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
 from app.core.db import get_session
-from app.models.order import Order, OrderItem
 from app.models.user import AppUser
 from app.schemas.admin_orders import AdminOrderList, TransitionRequest
-from app.schemas.order import OrderItemOut, OrderOut
+from app.schemas.order import OrderOut
 from app.services.admin_order_service import AdminOrderService
 from app.services.payment.maib_client import MaibError
 from app.services.payment.payment_service import PaymentService
@@ -39,38 +38,6 @@ router = APIRouter(
 
 # Default page size for the admin order list (§4 envelope).
 DEFAULT_PAGE_SIZE: int = 20
-
-
-def _to_out(order: Order, items: list[OrderItem]) -> OrderOut:
-    """Assemble an :class:`OrderOut` from an order and its lines.
-
-    Args:
-        order: The persisted order.
-        items: The order's lines.
-
-    Returns:
-        OrderOut: The response projection.
-    """
-    return OrderOut(
-        number=order.number,
-        status=order.status,
-        payment_status=order.payment_status,
-        email=order.email,
-        phone=order.phone,
-        subtotal=order.subtotal,
-        discount_total=order.discount_total,
-        delivery_cost=order.delivery_cost,
-        total=order.total,
-        delivery_type=order.delivery_type,
-        delivery_address_id=order.delivery_address_id,
-        delivery_name=order.delivery_name,
-        delivery_city=order.delivery_city,
-        delivery_street=order.delivery_street,
-        delivery_zip=order.delivery_zip,
-        payment_method=order.payment_method,
-        created_at=order.created_at,
-        items=[OrderItemOut.model_validate(item) for item in items],
-    )
 
 
 @router.get("", response_model=AdminOrderList)
@@ -114,7 +81,7 @@ async def list_orders(
         page_size=page_size,
     )
     return AdminOrderList(
-        data=[_to_out(order, items) for order, items in pairs],
+        data=[OrderOut.from_order(order, items) for order, items in pairs],
         total=total,
         page=page,
         page_size=page_size,
@@ -142,7 +109,7 @@ async def get_order(
     """
     service = AdminOrderService(session)
     order, items = await service.get_order(number)
-    return _to_out(order, items)
+    return OrderOut.from_order(order, items)
 
 
 @router.post("/{number}/transition", response_model=OrderOut)
@@ -177,7 +144,7 @@ async def transition_order(
         to_payment_status=data.to_payment_status,
         changed_by=f"admin:{staff.id}",
     )
-    return _to_out(order, items)
+    return OrderOut.from_order(order, items)
 
 
 @router.post("/{number}/refund", response_model=OrderOut)
@@ -227,4 +194,4 @@ async def refund_order(
         ) from exc
 
     order, items = await admin_service.get_order(number)
-    return _to_out(order, items)
+    return OrderOut.from_order(order, items)

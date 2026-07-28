@@ -14,7 +14,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.order import DELIVERY_TYPES
+from app.models.order import DELIVERY_TYPES, Order, OrderItem
 
 # Rendered literal set for the ``delivery_type`` field description.
 _DELIVERY_CHOICES: str = " | ".join(DELIVERY_TYPES)
@@ -178,3 +178,41 @@ class OrderOut(BaseModel):
     # Set only for a card (maib) checkout: the maib payUrl the storefront
     # redirects the payer to. ``None`` for COD (behaviour unchanged).
     pay_url: str | None = None
+
+    @classmethod
+    def from_order(cls, order: Order, items: list[OrderItem]) -> "OrderOut":
+        """Assemble the response DTO from a persisted order and its lines.
+
+        The single canonical projection used by every order read path (customer,
+        admin, checkout). Built explicitly rather than via ``from_attributes`` on
+        ``Order`` because the ORM ``Order`` intentionally has no ``items``
+        relationship. ``pay_url`` stays ``None`` here and is set post-build only
+        on the card-checkout path.
+
+        Args:
+            order: The persisted order.
+            items: The order's lines.
+
+        Returns:
+            OrderOut: The response projection.
+        """
+        return cls(
+            number=order.number,
+            status=order.status,
+            payment_status=order.payment_status,
+            email=order.email,
+            phone=order.phone,
+            subtotal=order.subtotal,
+            discount_total=order.discount_total,
+            delivery_cost=order.delivery_cost,
+            total=order.total,
+            delivery_type=order.delivery_type,
+            delivery_address_id=order.delivery_address_id,
+            delivery_name=order.delivery_name,
+            delivery_city=order.delivery_city,
+            delivery_street=order.delivery_street,
+            delivery_zip=order.delivery_zip,
+            payment_method=order.payment_method,
+            created_at=order.created_at,
+            items=[OrderItemOut.model_validate(item) for item in items],
+        )

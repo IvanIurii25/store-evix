@@ -26,12 +26,12 @@ from app.api.lang import normalize_lang
 from app.core.config import settings
 from app.core.errors import DomainError
 from app.models.cart import Cart
-from app.models.order import Order, OrderItem
+from app.models.order import OrderItem
 from app.models.user import Address
 from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.order_repo import NAME_LANG, OrderRepository
 from app.repositories.user_repo import UserRepository
-from app.schemas.order import DeliveryAddressIn, OrderItemOut, OrderOut, QuoteOut
+from app.schemas.order import DeliveryAddressIn, OrderOut, QuoteOut
 from app.services.payment.payment_service import PaymentService
 from app.services.promo_service import PromoService
 from app.tasks.order_email import send_order_confirmation_email
@@ -554,7 +554,7 @@ class CheckoutService:
 
         await self.session.commit()
         await self._send_confirmation(order.number, email, order.total)
-        return self._build_order_out(order, item_models)
+        return OrderOut.from_order(order, item_models)
 
     # ------------------------------------------------------------------ #
     # Card payment initiation (maib) — only when payment_method == card
@@ -832,44 +832,6 @@ class CheckoutService:
         if threshold is not None and subtotal >= threshold:
             return _ZERO
         return settings.courier_rate
-
-    def _build_order_out(
-        self,
-        order: Order,
-        item_models: list[OrderItem],
-    ) -> OrderOut:
-        """Assemble the response DTO from the persisted order + lines.
-
-        Built explicitly (rather than ``from_attributes`` on ``Order``) because
-        the ORM ``Order`` intentionally has no ``items`` relationship.
-
-        Args:
-            order: The persisted order.
-            item_models: The persisted order lines.
-
-        Returns:
-            OrderOut: The response projection.
-        """
-        return OrderOut(
-            number=order.number,
-            status=order.status,
-            payment_status=order.payment_status,
-            email=order.email,
-            phone=order.phone,
-            subtotal=order.subtotal,
-            discount_total=order.discount_total,
-            delivery_cost=order.delivery_cost,
-            total=order.total,
-            delivery_type=order.delivery_type,
-            delivery_address_id=order.delivery_address_id,
-            delivery_name=order.delivery_name,
-            delivery_city=order.delivery_city,
-            delivery_street=order.delivery_street,
-            delivery_zip=order.delivery_zip,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            items=[OrderItemOut.model_validate(item) for item in item_models],
-        )
 
     async def _send_confirmation(
         self,

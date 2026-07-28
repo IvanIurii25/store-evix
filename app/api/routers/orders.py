@@ -18,44 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user, guest_or_user
 from app.core.db import get_session
-from app.models.order import Order, OrderItem
+from app.models.order import Order
 from app.models.user import AppUser
 from app.repositories.order_repo import OrderRepository
-from app.schemas.order import OrderItemOut, OrderLookupIn, OrderOut
+from app.schemas.order import OrderLookupIn, OrderOut
 
 router = APIRouter(prefix="/orders", tags=["orders"])
-
-
-def _to_out(order: Order, items: list[OrderItem]) -> OrderOut:
-    """Assemble an :class:`OrderOut` from an order and its lines.
-
-    Args:
-        order: The persisted order.
-        items: The order's lines.
-
-    Returns:
-        OrderOut: The response projection.
-    """
-    return OrderOut(
-        number=order.number,
-        status=order.status,
-        payment_status=order.payment_status,
-        email=order.email,
-        phone=order.phone,
-        subtotal=order.subtotal,
-        discount_total=order.discount_total,
-        delivery_cost=order.delivery_cost,
-        total=order.total,
-        delivery_type=order.delivery_type,
-        delivery_address_id=order.delivery_address_id,
-        delivery_name=order.delivery_name,
-        delivery_city=order.delivery_city,
-        delivery_street=order.delivery_street,
-        delivery_zip=order.delivery_zip,
-        payment_method=order.payment_method,
-        created_at=order.created_at,
-        items=[OrderItemOut.model_validate(item) for item in items],
-    )
 
 
 @router.get("", response_model=list[OrderOut])
@@ -75,7 +43,9 @@ async def list_orders(
     repo = OrderRepository(session)
     orders = await repo.list_orders_for_user(user.id)
     items_by_order = await repo.list_items_for_orders([o.id for o in orders])
-    return [_to_out(order, items_by_order[order.id]) for order in orders]
+    return [
+        OrderOut.from_order(order, items_by_order[order.id]) for order in orders
+    ]
 
 
 @router.get("/{number}", response_model=OrderOut)
@@ -160,7 +130,7 @@ async def _fetch_authorized(
             status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
         )
     items = (await repo.list_items_for_orders([order.id]))[order.id]
-    return _to_out(order, items)
+    return OrderOut.from_order(order, items)
 
 
 def _authorized(order: Order, user: AppUser | None, email: str | None) -> bool:
