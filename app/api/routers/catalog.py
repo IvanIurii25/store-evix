@@ -87,7 +87,7 @@ async def list_category_products(
     cursor: str | None = Query(default=None),
     price_min: Decimal | None = Query(default=None, ge=0),
     price_max: Decimal | None = Query(default=None, ge=0),
-    value_ids: list[int] | None = Query(default=None),
+    value_ids: list[int] | None = Query(default=None, max_length=50),
     lang: str = Depends(get_lang),
     session: AsyncSession = Depends(get_session),
 ) -> ProductListing:

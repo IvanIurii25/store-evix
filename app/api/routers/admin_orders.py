@@ -50,7 +50,7 @@ async def list_orders(
         default=None,
         description="Search over number / email / phone.",
     ),
-    page: int = Query(default=1, ge=1, description="1-based page number."),
+    page: int = Query(default=1, ge=1, le=10000, description="1-based page number."),
     page_size: int = Query(
         default=DEFAULT_PAGE_SIZE,
         ge=1,

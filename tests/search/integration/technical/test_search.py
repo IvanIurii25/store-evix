@@ -203,6 +203,14 @@ async def test_search_falls_back_to_postgres_when_elastic_fails(
     assert body["data"][0]["card"]["product_id"] == 140
 
 
+@pytest.mark.asyncio
+async def test_search_rejects_page_over_cap(client):
+    """A page number above the cap is rejected by request validation (422)."""
+    resp = await client.get("/api/v1/search?q=phone&page=10001")
+
+    assert resp.status_code == 422
+
+
 async def _seed_facet_products(seed) -> None:
     """Two active phones (RAM 8/16) + one inactive, with brand+ram attributes."""
     session = seed["session"]

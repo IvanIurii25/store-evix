@@ -288,7 +288,7 @@ async def move_category(
 async def search_products(
     _staff: AppUser = Depends(current_staff),
     service: AdminCatalogService = Depends(get_admin_catalog_service),
-    search: str | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
     is_active: bool | None = Query(
         default=None,

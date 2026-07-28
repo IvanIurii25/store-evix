@@ -46,9 +46,9 @@ class ReviewSubmitIn(BaseModel):
 
     product_id: int
     rating: int = Field(ge=MIN_RATING, le=MAX_RATING)
-    title: str | None = None
-    body: str | None = None
-    author_name: str | None = None
+    title: str | None = Field(default=None, max_length=200)
+    body: str | None = Field(default=None, max_length=4000)
+    author_name: str | None = Field(default=None, max_length=100)
     lang: str = "ro"
 
     @field_validator("lang")

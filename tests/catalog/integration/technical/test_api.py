@@ -224,3 +224,13 @@ async def test_api_lang_default_ro(seed, client):
 
     assert resp.status_code == 200
     assert resp.json()[0]["slug"] == "electronice"
+
+
+@pytest.mark.asyncio
+async def test_listing_rejects_too_many_value_ids(seed, client):
+    """More than 50 facet ``value_ids`` is rejected by request validation (422)."""
+    params = "&".join(f"value_ids={i}" for i in range(51))
+
+    resp = await client.get(f"/api/v1/catalog/categories/any/products?{params}")
+
+    assert resp.status_code == 422

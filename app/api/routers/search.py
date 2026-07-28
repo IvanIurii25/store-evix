@@ -27,7 +27,7 @@ router = APIRouter(tags=["search"])
 @router.get("/search", response_model=SearchResponse)
 async def search(
     q: str = Query(..., min_length=1, description="Full-text search query."),
-    page: int = Query(default=1, ge=1, description="1-based page number."),
+    page: int = Query(default=1, ge=1, le=10000, description="1-based page number."),
     page_size: int = Query(
         default=DEFAULT_SEARCH_PAGE_SIZE,
         ge=1,

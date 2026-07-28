@@ -576,3 +576,9 @@ async def test_slug_is_normalized_to_lowercase(client: AsyncClient) -> None:
     assert response.status_code == 201, response.text
     slugs = {t["lang"]: t["slug"] for t in response.json()["translations"]}
     assert slugs == {"ru": "tehnika-ru", "ro": "tehnica-ro"}
+
+
+async def test_product_search_rejects_overlong_query(client: AsyncClient) -> None:
+    """An admin product search string over the max length is rejected (422)."""
+    response = await client.get("/api/v1/admin/products", params={"search": "x" * 201})
+    assert response.status_code == 422, response.text

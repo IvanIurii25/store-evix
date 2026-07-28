@@ -38,6 +38,15 @@ async def test_submit_creates_pending(
     assert payload["product_id"] == product.id
 
 
+async def test_submit_rejects_oversized_body(client: AsyncClient) -> None:
+    """A review body over the max length is rejected by validation (422)."""
+    resp = await client.post(
+        _URL,
+        json={"product_id": 1, "rating": 5, "body": "x" * 4001, "lang": "ru"},
+    )
+    assert resp.status_code == 422
+
+
 async def test_submit_edit_returns_to_pending(
     client: AsyncClient,
     db_session: AsyncSession,

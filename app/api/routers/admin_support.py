@@ -91,7 +91,7 @@ async def list_conversations(
         default=None,
         description="Exact conversation-status filter.",
     ),
-    page: int = Query(default=1, ge=1, description="1-based page number."),
+    page: int = Query(default=1, ge=1, le=10000, description="1-based page number."),
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> ConversationList:
@@ -199,7 +199,7 @@ async def stream(redis: Redis = Depends(get_redis)) -> StreamingResponse:
 @router.get("/conversations/{conversation_id}", response_model=ThreadOut)
 async def get_conversation(
     conversation_id: int,
-    page: int = Query(default=1, ge=1, description="1-based page number."),
+    page: int = Query(default=1, ge=1, le=10000, description="1-based page number."),
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> ThreadOut:
