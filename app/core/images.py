@@ -33,6 +33,12 @@ RESPONSIVE_WIDTHS: tuple[int, ...] = (200, 400, 800, 1200)
 # guard stays in force on top of this (never disabled).
 MAX_UPLOAD_DIMENSION: int = 6000
 
+# Hard ceiling on a source upload's byte size (10 MiB). Checked at the HTTP
+# boundary against ``UploadFile.size`` BEFORE the bytes are read into memory, so
+# a hostile multi-GB upload is rejected without being buffered (the dimension /
+# pixel-bomb guards above only run after a full read, which is too late for RAM).
+MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+
 # Modes carrying an alpha channel — encoded straight through as WebP RGBA.
 _ALPHA_MODES: frozenset[str] = frozenset({"RGBA", "LA"})
 

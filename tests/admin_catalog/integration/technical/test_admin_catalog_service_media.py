@@ -34,6 +34,7 @@ class _FakeUpload:
     def __init__(self, content_type: str, data: bytes = b"bytes") -> None:
         self.content_type = content_type
         self.filename = "photo.png"
+        self.size = len(data)
         self._data = data
 
     async def seek(self, offset: int) -> None:

@@ -18,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
 from app.core.db import get_session
-from app.core.images import ImageValidationError, validate_and_build_variants
+from app.core.images import (
+    MAX_UPLOAD_BYTES,
+    ImageValidationError,
+    validate_and_build_variants,
+)
 from app.core.storage import get_storage
 from app.models.catalog import Attribute, Category, Product
 from app.models.user import AppUser
@@ -459,6 +463,11 @@ async def upload_asset(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Only image uploads are allowed",
+        )
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Image exceeds the maximum upload size",
         )
     await file.seek(0)
     data = await file.read()

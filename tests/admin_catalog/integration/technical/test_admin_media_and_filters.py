@@ -200,6 +200,44 @@ async def test_upload_svg_rejected_as_non_raster(
     assert list(tmp_path.iterdir()) == []
 
 
+async def test_upload_media_rejects_oversize(
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A product-media upload over the byte cap is rejected before the read (400)."""
+    _use_local_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr("app.services.admin_catalog_service.MAX_UPLOAD_BYTES", 10)
+    category_id = await _make_category(client)
+    product_id = await _make_product(client, category_id, "SKU-BIG")
+
+    resp = await client.post(
+        f"/api/v1/admin/products/{product_id}/media",
+        files={"file": ("big.png", BytesIO(_png_bytes()), "image/png")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "invalid"
+    # Rejected before the save — nothing persisted.
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_asset_upload_rejects_oversize(
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The bare asset endpoint rejects an over-cap upload with 422."""
+    _use_local_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr("app.api.routers.admin_catalog.MAX_UPLOAD_BYTES", 10)
+
+    resp = await client.post(
+        "/api/v1/admin/assets",
+        files={"file": ("big.png", BytesIO(_png_bytes()), "image/png")},
+    )
+    assert resp.status_code == 422, resp.text
+    assert list(tmp_path.iterdir()) == []
+
+
 async def test_asset_upload_rejects_svg_and_accepts_raster(
     client: AsyncClient,
     tmp_path,

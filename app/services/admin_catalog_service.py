@@ -19,7 +19,11 @@ from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DomainError
-from app.core.images import ImageValidationError, validate_and_build_variants
+from app.core.images import (
+    MAX_UPLOAD_BYTES,
+    ImageValidationError,
+    validate_and_build_variants,
+)
 from app.core.storage import get_storage
 from app.models.catalog import (
     ALLOWED_LANGS,
@@ -1147,12 +1151,15 @@ class AdminCatalogService:
 
         Raises:
             AdminNotFoundError: If the product does not exist.
-            AdminValidationError: If the file is not an allowed image kind, or is
-                not a decodable raster / exceeds the max upload dimension.
+            AdminValidationError: If the file is not an allowed image kind,
+                exceeds the max upload byte size, or is not a decodable raster /
+                exceeds the max upload dimension.
         """
         await self._get_product(product_id)
         if not self._is_allowed_image(upload):
             raise AdminValidationError("Only image uploads are allowed")
+        if upload.size is not None and upload.size > MAX_UPLOAD_BYTES:
+            raise AdminValidationError("Image exceeds the maximum upload size")
 
         await upload.seek(0)
         data = await upload.read()
