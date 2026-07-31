@@ -128,6 +128,70 @@ class Settings(BaseSettings):
     # 5000 is the common courier default; the exact value comes from the tariff.
     parcel_volumetric_divisor: int = 5000
 
+    # --- Nova Post delivery (env-gated, like maib) ---
+    # Empty (the default) means the carrier is off: the storefront shows the
+    # existing pickup/own-courier options and the Nova Post endpoints stay shut.
+    # ``stub`` serves a deterministic fake carrier so the feature can be built
+    # and tested before the merchant contract exists — it is refused outside dev
+    # by the validator below. ``sandbox``/``live`` pick the real API host.
+    novapost_mode: str = ""  # "" (off) | stub | sandbox | live
+    novapost_api_token: str = ""  # apiKey issued by Nova Post
+    novapost_contract_number: str = ""  # payerContractNumber
+    # Sender: the branch parcels are handed over at, plus contact details that
+    # travel on the waybill.
+    novapost_sender_division_id: str = ""
+    novapost_sender_name: str = ""
+    novapost_sender_phone: str = ""
+    novapost_sender_email: str = ""
+    novapost_sender_company: str = ""
+    # Which pickup categories the storefront may offer, comma-separated:
+    # branch | postomat | courier.
+    novapost_division_categories: str = "branch,postomat,courier"
+    # Free-delivery threshold for Nova Post; falls back to the store-wide
+    # ``free_delivery_from`` when unset (a carrier costs real money, so the two
+    # must be separable).
+    novapost_free_delivery_from: Decimal | None = None
+    # Reference-data cache TTLs (seconds): settlements barely change, branch
+    # lists move a little more often.
+    novapost_settlements_ttl: int = 86_400
+    novapost_divisions_ttl: int = 21_600
+
+    @property
+    def novapost_stub(self) -> bool:
+        """True when the deterministic stub carrier is in use (no network)."""
+        return self.novapost_mode.strip().lower() == "stub"
+
+    @property
+    def novapost_enabled(self) -> bool:
+        """True when Nova Post may be offered at checkout.
+
+        The stub counts as enabled — that is its whole point (build and test the
+        flow before credentials exist). A real mode additionally needs the API
+        token and a sender branch; a half-filled config stays disabled rather
+        than failing at the first customer's checkout.
+        """
+        if self.novapost_stub:
+            return True
+        return bool(self.novapost_api_token and self.novapost_sender_division_id)
+
+    @property
+    def novapost_base_url(self) -> str:
+        """Return the API host for the configured mode (empty for the stub)."""
+        return {
+            "sandbox": "https://api-stage.novapost.pl/v.1.0",
+            "live": "https://api.novapost.com/v.1.0",
+        }.get(self.novapost_mode.strip().lower(), "")
+
+    @property
+    def novapost_categories(self) -> list[str]:
+        """Return the enabled pickup categories, normalized and de-duplicated."""
+        seen: list[str] = []
+        for raw in self.novapost_division_categories.split(","):
+            item = raw.strip().lower()
+            if item and item not in seen:
+                seen.append(item)
+        return seen
+
     # Media storage for admin uploads (§10). Local dir in dev; S3 later.
     media_root: str = "var/media"
     media_url_prefix: str = "/media"
@@ -176,6 +240,9 @@ class Settings(BaseSettings):
     rate_limit_track: str = "120/60"
     # Consent decisions are rare per visitor; a small per-IP budget is plenty.
     rate_limit_consent: str = "20/60"
+    # Delivery reference lookups: typed into a picker, so the budget is generous
+    # per IP, but present — the endpoint proxies a third-party API.
+    rate_limit_delivery: str = "60/60"
     # The public Telegram webhook: per-IP budget (only Telegram's IPs should hit it).
     rate_limit_telegram: str = "60/60"
 
@@ -209,6 +276,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "jwt_secret is the insecure default; set JWT_SECRET for "
                 f"APP_ENV={self.app_env!r}"
+            )
+        if self.app_env not in ("local", "test") and self.novapost_stub:
+            raise ValueError(
+                "novapost_mode='stub' serves a fake carrier and must never run "
+                f"outside dev; set NOVAPOST_MODE for APP_ENV={self.app_env!r}"
             )
         return self
 

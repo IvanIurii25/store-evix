@@ -22,6 +22,7 @@ from app.api.routers.cart import router as cart_router
 from app.api.routers.catalog import router as catalog_router
 from app.api.routers.checkout import router as checkout_router
 from app.api.routers.consent import router as consent_router
+from app.api.routers.delivery import router as delivery_router
 from app.api.routers.health import router as health_router
 from app.api.routers.orders import router as orders_router
 from app.api.routers.payments import router as payments_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(track_router, prefix=API_V1_PREFIX)
     app.include_router(telegram_router, prefix=API_V1_PREFIX)
     app.include_router(consent_router, prefix=API_V1_PREFIX)
+    app.include_router(delivery_router, prefix=API_V1_PREFIX)
     app.include_router(restock_router, prefix=API_V1_PREFIX)
     app.include_router(reviews_router, prefix=API_V1_PREFIX)
     app.include_router(admin_reviews_router, prefix=API_V1_PREFIX)

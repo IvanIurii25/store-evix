@@ -181,6 +181,20 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       TELEGRAM_STAFF_CHAT_ID: ${TELEGRAM_STAFF_CHAT_ID:-}
+      # Nova Post delivery. NOVAPOST_MODE empty → carrier off (pickup + own
+      # courier only). Set it to sandbox|live together with the token and the
+      # sender branch to enable; 'stub' is refused outside dev by the settings
+      # validator. Wired here up front so enabling it later is an .env edit —
+      # the maib rollout lost time to exactly this being missing.
+      NOVAPOST_MODE: ${NOVAPOST_MODE:-}
+      NOVAPOST_API_TOKEN: ${NOVAPOST_API_TOKEN:-}
+      NOVAPOST_CONTRACT_NUMBER: ${NOVAPOST_CONTRACT_NUMBER:-}
+      NOVAPOST_SENDER_DIVISION_ID: ${NOVAPOST_SENDER_DIVISION_ID:-}
+      NOVAPOST_SENDER_NAME: ${NOVAPOST_SENDER_NAME:-}
+      NOVAPOST_SENDER_PHONE: ${NOVAPOST_SENDER_PHONE:-}
+      NOVAPOST_SENDER_EMAIL: ${NOVAPOST_SENDER_EMAIL:-}
+      NOVAPOST_SENDER_COMPANY: ${NOVAPOST_SENDER_COMPANY:-}
+      NOVAPOST_FREE_DELIVERY_FROM: ${NOVAPOST_FREE_DELIVERY_FROM:-}
     # uvicorn --proxy-headers: trust X-Forwarded-* from Cloudflare (rate-limit
     # reads the real client IP). Multiple workers for prod load.
     command:
