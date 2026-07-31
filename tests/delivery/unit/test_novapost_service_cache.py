@@ -6,6 +6,8 @@ it must never become a new way for the shop to break: a Redis outage degrades to
 uncached lookups, not to an error page.
 """
 
+from decimal import Decimal
+
 import pytest
 
 from app.core.config import settings
@@ -92,3 +94,66 @@ async def test_parcel_falls_back_to_the_default_weight() -> None:
     service = NovaPostService(BrokenRedis())
 
     assert service.build_parcels([])[0]["actualWeight"] > 0
+
+
+async def test_shipment_payer_defaults_to_sender_without_a_contract(monkeypatch) -> None:
+    """No contract number → we pay on handover; no invented fallback contract.
+
+    The reference implementation falls back to a literal contract belonging to
+    another merchant, which would bill a stranger.
+    """
+    monkeypatch.setattr(settings, "novapost_contract_number", "")
+    service = NovaPostService(BrokenRedis())
+
+    payload = service.build_shipment(
+        order_number="20260731-000001",
+        recipient_name="Ion",
+        phone="+37360000000",
+        email="a@b.c",
+        delivery_type="branch",
+        division_id="d-1",
+        settlement_id=None,
+        address_parts=None,
+        weights_g=[1200],
+        insurance=Decimal("499.00"),
+    )
+
+    assert payload["payerType"] == "Sender"
+    assert "payerContractNumber" not in payload
+    assert payload["recipient"]["divisionId"] == "d-1"
+    assert payload["parcels"][0]["insuranceCost"] == "499.00"
+    assert payload["clientOrder"] == "20260731-000001"
+
+
+async def test_shipment_bills_the_contract_when_configured(monkeypatch) -> None:
+    """With a contract number the carrier bills that contract."""
+    monkeypatch.setattr(settings, "novapost_contract_number", "CNPMD-1")
+    service = NovaPostService(BrokenRedis())
+
+    payload = service.build_shipment(
+        order_number="X",
+        recipient_name="Ion",
+        phone="p",
+        email="e",
+        delivery_type="courier",
+        division_id=None,
+        settlement_id="s-1",
+        address_parts={"street": "str. A", "building": "1"},
+        weights_g=[500],
+        insurance=Decimal("10"),
+    )
+
+    assert payload["payerType"] == "ThirdPerson"
+    assert payload["payerContractNumber"] == "CNPMD-1"
+    # A courier shipment addresses a settlement, not a pickup point.
+    assert payload["recipient"]["settlementId"] == "s-1"
+    assert "divisionId" not in payload["recipient"]
+
+
+async def test_tracking_maps_numbers_to_status() -> None:
+    """Tracking is reduced to {waybill: (code, text)} for the sweep to store."""
+    service = NovaPostService(BrokenRedis())
+
+    statuses = await service.tracking(["STUB00000001"])
+
+    assert statuses["STUB00000001"] == ("10", "Accepted")
