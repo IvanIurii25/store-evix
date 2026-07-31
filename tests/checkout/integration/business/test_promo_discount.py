@@ -17,6 +17,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.order import Order
 
 pytestmark = pytest.mark.asyncio
@@ -247,3 +248,114 @@ async def test_checkout_without_promo_unchanged(
         await db_session.execute(select(Order).where(Order.number == body["number"]))
     ).scalar_one()
     assert order.promo_code is None
+
+
+# --------------------------------------------------------------------------- #
+# Promo × free-delivery threshold (decision 2026-07-31, novapost-plan §0.1)
+# --------------------------------------------------------------------------- #
+# The threshold is measured against ``subtotal - discount_total``, not the raw
+# subtotal: a coupon that drops what the customer actually pays below the
+# threshold brings the courier charge back. Before this decision a coupon handed
+# out free delivery the order no longer qualified for — cheap with our own flat
+# rate, real money once a carrier invoices us.
+
+_COURIER_ADDRESS = {
+    "full_name": "Ion Guest",
+    "city": "Chișinău",
+    "street": "str. Testului 1",
+}
+_COURIER_QUOTE = {"delivery_type": "courier", "delivery_address": _COURIER_ADDRESS}
+
+
+async def test_promo_below_threshold_restores_courier_charge(
+    client, add_product, add_promo, monkeypatch
+) -> None:
+    """A coupon that drops the payable below the threshold re-charges courier."""
+    monkeypatch.setattr(settings, "courier_rate", Decimal("50"))
+    monkeypatch.setattr(settings, "free_delivery_from", Decimal("500"))
+    # 520 alone clears the threshold; 520 - 10% = 468 does not.
+    await _seed_line(client, add_product, product_id=1, price="520.00", qty=1)
+    await add_promo("SAVE10", discount_type="percent", discount_value=Decimal("10"))
+
+    resp = await client.post(_QUOTE, json={**_COURIER_QUOTE, "promo_code": "SAVE10"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert Decimal(body["subtotal"]) == Decimal("520.00")
+    assert Decimal(body["discount_total"]) == Decimal("52.00")
+    assert Decimal(body["delivery_cost"]) == Decimal("50")
+    assert Decimal(body["total"]) == Decimal("518.00")
+
+
+async def test_promo_above_threshold_keeps_free_delivery(
+    client, add_product, add_promo, monkeypatch
+) -> None:
+    """A coupon that leaves the payable at/over the threshold keeps it free."""
+    monkeypatch.setattr(settings, "courier_rate", Decimal("50"))
+    monkeypatch.setattr(settings, "free_delivery_from", Decimal("500"))
+    # 600 - 10% = 540, still >= 500.
+    await _seed_line(client, add_product, product_id=1, price="600.00", qty=1)
+    await add_promo("SAVE10", discount_type="percent", discount_value=Decimal("10"))
+
+    resp = await client.post(_QUOTE, json={**_COURIER_QUOTE, "promo_code": "SAVE10"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert Decimal(body["discount_total"]) == Decimal("60.00")
+    assert Decimal(body["delivery_cost"]) == Decimal("0")
+    assert Decimal(body["total"]) == Decimal("540.00")
+
+
+async def test_discount_covering_subtotal_still_pays_delivery(
+    client, add_product, add_promo, monkeypatch
+) -> None:
+    """A coupon worth more than the cart leaves delivery as the only charge.
+
+    Characterization, not a regression guard: the ``max(..., 0)`` clamp on the
+    threshold base is defensive and has no observable effect here (a negative
+    base compares below the threshold just like zero does).
+    """
+    monkeypatch.setattr(settings, "courier_rate", Decimal("50"))
+    monkeypatch.setattr(settings, "free_delivery_from", Decimal("500"))
+    await _seed_line(client, add_product, product_id=1, price="300.00", qty=1)
+    await add_promo("ALLOFF", discount_type="fixed", discount_value=Decimal("500"))
+
+    resp = await client.post(_QUOTE, json={**_COURIER_QUOTE, "promo_code": "ALLOFF"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Discount is clamped to the subtotal, so the goods cost nothing…
+    assert Decimal(body["discount_total"]) == Decimal("300.00")
+    # …and a zero payable is below the threshold — delivery is still charged.
+    assert Decimal(body["delivery_cost"]) == Decimal("50")
+    assert Decimal(body["total"]) == Decimal("50.00")
+
+
+async def test_checkout_persists_courier_charge_restored_by_promo(
+    client, add_product, add_promo, db_session: AsyncSession, monkeypatch
+) -> None:
+    """The re-charged delivery is recomputed and persisted at checkout, not just quoted."""
+    monkeypatch.setattr(settings, "courier_rate", Decimal("50"))
+    monkeypatch.setattr(settings, "free_delivery_from", Decimal("500"))
+    await _seed_line(client, add_product, product_id=1, price="520.00", qty=1)
+    await add_promo("SAVE10", discount_type="percent", discount_value=Decimal("10"))
+
+    resp = await client.post(
+        _CHECKOUT,
+        json={
+            "email": "buyer@example.com",
+            "phone": "+37360000000",
+            **_COURIER_QUOTE,
+            "promo_code": "SAVE10",
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    order = (
+        await db_session.execute(
+            select(Order).where(Order.number == resp.json()["number"])
+        )
+    ).scalar_one()
+    assert order.delivery_cost == Decimal("50")
+    assert order.discount_total == Decimal("52.00")
+    assert order.total == Decimal("518.00")

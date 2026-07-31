@@ -787,7 +787,13 @@ class CheckoutService:
         """
         subtotal = sum((line.line_total for line in lines), _ZERO)
         has_address = delivery_address_id is not None or delivery_address is not None
-        delivery_cost = self._delivery_cost(subtotal, delivery_type, has_address)
+        # The free-delivery threshold is measured against what the customer
+        # actually pays for goods, not the pre-discount subtotal: a coupon that
+        # drops the payable amount below the threshold brings the delivery charge
+        # back. Clamped at zero so a discount >= subtotal can't push the base
+        # negative.
+        payable = max(subtotal - discount_total, _ZERO)
+        delivery_cost = self._delivery_cost(payable, delivery_type, has_address)
         total = subtotal - discount_total + delivery_cost
         item_count = sum(line.qty for line in lines)
         return QuoteOut(
@@ -801,18 +807,23 @@ class CheckoutService:
 
     def _delivery_cost(
         self,
-        subtotal: Decimal,
+        payable_subtotal: Decimal,
         delivery_type: str,
         has_address: bool,
     ) -> Decimal:
         """Return the delivery charge for the chosen method (§9.4).
 
         ``pickup`` is free. ``courier`` costs ``settings.courier_rate`` unless the
-        subtotal reaches ``settings.free_delivery_from`` (when configured), and
-        requires a delivery address (saved id or inline).
+        payable amount reaches ``settings.free_delivery_from`` (when configured),
+        and requires a delivery address (saved id or inline).
+
+        The threshold is measured against the goods amount **after** the promo
+        discount (``subtotal - discount_total``, clamped at zero), so a coupon
+        cannot hand out free delivery the order no longer qualifies for.
 
         Args:
-            subtotal: Sum of line totals.
+            payable_subtotal: Goods amount the customer actually pays
+                (subtotal minus the validated discount).
             delivery_type: ``pickup`` or ``courier``.
             has_address: Whether a courier address was supplied (id or inline).
 
@@ -829,7 +840,7 @@ class CheckoutService:
                 "Courier delivery requires a delivery address"
             )
         threshold = settings.free_delivery_from
-        if threshold is not None and subtotal >= threshold:
+        if threshold is not None and payable_subtotal >= threshold:
             return _ZERO
         return settings.courier_rate
 
