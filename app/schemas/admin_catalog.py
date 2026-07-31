@@ -21,6 +21,9 @@ from app.models.catalog import ALLOWED_LANGS
 _CODE_MAX: int = 128
 _SLUG_MAX: int = 255
 _NAME_MAX: int = 512
+# 200 kg per item: generous for a webshop parcel, tight enough that a typo of
+# grams-for-kilograms (e.g. 500000) is rejected instead of quoted to a carrier.
+_WEIGHT_MAX_G: int = 200_000
 
 # A URL slug must be lowercase alphanumeric words joined by single hyphens
 # (no leading/trailing/double hyphens). Enforced so product/category links are
@@ -283,6 +286,8 @@ class ProductCreate(BaseModel):
     price: Decimal = Field(ge=0)
     old_price: Decimal | None = Field(default=None, ge=0)
     qty: int = Field(default=0, ge=0)
+    # Shipping weight in grams; ``None`` = not entered (carrier default applies).
+    weight_g: int | None = Field(default=None, ge=0, le=_WEIGHT_MAX_G)
     is_active: bool = False
     is_featured: bool = False
     has_variants: bool = False
@@ -301,6 +306,7 @@ class ProductUpdate(BaseModel):
     price: Decimal | None = Field(default=None, ge=0)
     old_price: Decimal | None = Field(default=None, ge=0)
     qty: int | None = Field(default=None, ge=0)
+    weight_g: int | None = Field(default=None, ge=0, le=_WEIGHT_MAX_G)
     is_active: bool | None = None
     is_featured: bool | None = None
     has_variants: bool | None = None
@@ -360,6 +366,7 @@ class ProductOut(BaseModel):
     price: Decimal
     old_price: Decimal | None = None
     qty: int
+    weight_g: int | None = None
     is_active: bool
     is_featured: bool = False
     has_variants: bool = False
@@ -388,6 +395,8 @@ class VariantAdminOut(BaseModel):
     price: Decimal
     old_price: Decimal | None = None
     qty: int
+    # ``None`` falls back to the product's weight, then the configured default.
+    weight_g: int | None = None
     position: int
     is_active: bool
     # The attribute values (one per variation attribute) that define this variant.
@@ -416,6 +425,7 @@ class VariantCreate(BaseModel):
     price: Decimal = Field(ge=0)
     old_price: Decimal | None = Field(default=None, ge=0)
     qty: int = Field(default=0, ge=0)
+    weight_g: int | None = Field(default=None, ge=0, le=_WEIGHT_MAX_G)
     is_active: bool = True
 
 
@@ -430,6 +440,7 @@ class VariantUpdate(BaseModel):
     price: Decimal | None = Field(default=None, ge=0)
     old_price: Decimal | None = Field(default=None, ge=0)
     qty: int | None = Field(default=None, ge=0)
+    weight_g: int | None = Field(default=None, ge=0, le=_WEIGHT_MAX_G)
     position: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
 
@@ -471,6 +482,8 @@ class ProductSearchItem(BaseModel):
     code: str
     price: Decimal
     old_price: Decimal | None = None
+    # ``None`` renders as a "weight not set" marker in the list.
+    weight_g: int | None = None
     is_active: bool
     name: str | None = None
 

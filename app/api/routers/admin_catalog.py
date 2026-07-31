@@ -116,6 +116,7 @@ async def _build_product_out(
         price=product.price,
         old_price=product.old_price,
         qty=product.qty,
+        weight_g=product.weight_g,
         is_active=product.is_active,
         is_featured=product.is_featured,
         has_variants=product.has_variants,
@@ -143,6 +144,7 @@ async def _build_variants_out(
             price=v.price,
             old_price=v.old_price,
             qty=v.qty,
+            weight_g=v.weight_g,
             position=v.position,
             is_active=v.is_active,
             value_ids=value_map.get(v.id, []),
@@ -302,6 +304,10 @@ async def search_products(
         default=False,
         description="Only products on sale (old_price set and > price).",
     ),
+    no_weight: bool = Query(
+        default=False,
+        description="Only products with no shipping weight entered.",
+    ),
 ) -> ProductSearchResult:
     """Search back-office products by ``code`` or translated name, with filters."""
     rows = await service.search_products(
@@ -310,6 +316,7 @@ async def search_products(
         is_active=is_active,
         low_stock=low_stock,
         on_sale=on_sale,
+        no_weight=no_weight,
     )
     return ProductSearchResult(
         data=[
@@ -318,6 +325,7 @@ async def search_products(
                 code=product.code,
                 price=product.price,
                 old_price=product.old_price,
+                weight_g=product.weight_g,
                 is_active=product.is_active,
                 name=name,
             )
@@ -551,6 +559,7 @@ async def _variant_out(
         price=variant.price,
         old_price=variant.old_price,
         qty=variant.qty,
+        weight_g=variant.weight_g,
         position=variant.position,
         is_active=variant.is_active,
         value_ids=value_map.get(variant.id, []),

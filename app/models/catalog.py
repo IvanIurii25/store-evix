@@ -115,6 +115,10 @@ class Product(Base, TimestampMixin):
     # become a denormalized cache (min price / aggregate) maintained on write.
     # Simple products keep this False and behave exactly as before.
     has_variants: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Shipping weight in grams, used to price a carrier parcel. NULL = not entered
+    # yet (the imported catalogue has no weights): the delivery service falls back
+    # to a configured per-item default instead of assuming zero.
+    weight_g: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ProductTranslation(Base):
@@ -251,6 +255,9 @@ class ProductVariant(Base, TimestampMixin):
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Per-variant shipping weight in grams; NULL falls back to the product's
+    # ``weight_g`` (and then to the configured default), same layering as price.
+    weight_g: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ProductVariantValue(Base):

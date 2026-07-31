@@ -441,6 +441,7 @@ class AdminCatalogService:
             price=payload.price,
             old_price=payload.old_price,
             qty=payload.qty,
+            weight_g=payload.weight_g,
             is_active=payload.is_active,
             is_featured=payload.is_featured,
             has_variants=payload.has_variants,
@@ -884,6 +885,7 @@ class AdminCatalogService:
             price=payload.price,
             old_price=payload.old_price,
             qty=payload.qty,
+            weight_g=payload.weight_g,
             is_active=payload.is_active,
             position=position or 0,
         )
@@ -1286,6 +1288,7 @@ class AdminCatalogService:
         is_active: bool | None = None,
         low_stock: bool = False,
         on_sale: bool = False,
+        no_weight: bool = False,
     ) -> list[tuple[Product, str | None]]:
         """Search products for the back-office by ``code`` or translated name.
 
@@ -1300,6 +1303,9 @@ class AdminCatalogService:
                 :data:`LOW_STOCK_THRESHOLD` (the back-office restock queue).
             on_sale: When ``True``, only products on sale — ``old_price`` set and
                 strictly greater than ``price`` (the "Акции" list, §4.2).
+            no_weight: When ``True``, only products with no shipping weight
+                entered (``weight_g IS NULL``) — the queue of what still has to
+                be filled in before a carrier can price it honestly.
 
         Returns:
             list[tuple[Product, str | None]]: ``(product, display_name)`` rows,
@@ -1338,6 +1344,8 @@ class AdminCatalogService:
                 Product.old_price.is_not(None),
                 Product.old_price > Product.price,
             )
+        if no_weight:
+            id_stmt = id_stmt.where(Product.weight_g.is_(None))
         product_ids = list((await self.session.execute(id_stmt)).scalars().all())
         if not product_ids:
             return []

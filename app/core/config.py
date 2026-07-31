@@ -115,6 +115,19 @@ class Settings(BaseSettings):
     free_delivery_from: Decimal | None = None  # free courier over this subtotal
     tax_percent: Decimal = Decimal("0")  # single VAT rate if applied
 
+    # --- Parcel metrics (carrier integrations, Nova Post phase P0) ---
+    # Fallback weight per cart item when neither the variant nor the product has
+    # a ``weight_g``. Deliberately generous: under-declaring costs us the
+    # difference at the counter, over-declaring only costs the customer cents.
+    parcel_default_item_weight_g: int = 500
+    # Outer box used until per-product dimensions exist (millimetres).
+    parcel_width_mm: int = 250
+    parcel_length_mm: int = 350
+    parcel_height_mm: int = 200
+    # Volumetric divisor in cm³ per kg (carriers bill max(actual, volumetric)).
+    # 5000 is the common courier default; the exact value comes from the tariff.
+    parcel_volumetric_divisor: int = 5000
+
     # Media storage for admin uploads (§10). Local dir in dev; S3 later.
     media_root: str = "var/media"
     media_url_prefix: str = "/media"
