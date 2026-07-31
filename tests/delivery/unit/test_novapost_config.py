@@ -85,3 +85,26 @@ def test_stub_is_allowed_in_test_env() -> None:
 def test_live_settings_object_is_not_stubbed() -> None:
     """The process-wide settings never default to the fake carrier."""
     assert settings.novapost_stub is False or settings.app_env in ("local", "test")
+
+
+def test_empty_env_value_means_unset() -> None:
+    """An empty env string is "not configured", not a parse error.
+
+    Docker Compose expands an unset variable to ``''``. Before this coercion the
+    container died on import with a decimal-parsing error — which is exactly how
+    the P1 deploy took the API down.
+    """
+    config = _settings(free_delivery_from="", novapost_free_delivery_from="")
+
+    assert config.free_delivery_from is None
+    assert config.novapost_free_delivery_from is None
+
+
+def test_configured_threshold_survives_the_coercion() -> None:
+    """A real value is still parsed normally."""
+    from decimal import Decimal
+
+    config = _settings(free_delivery_from="500", novapost_free_delivery_from="700")
+
+    assert config.free_delivery_from == Decimal("500")
+    assert config.novapost_free_delivery_from == Decimal("700")

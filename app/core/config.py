@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _INSECURE_JWT_DEFAULT = "dev-insecure-change-me"
@@ -265,6 +265,24 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """CORS origins as a list (split from the comma-separated setting)."""
         return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    @field_validator(
+        "free_delivery_from",
+        "novapost_free_delivery_from",
+        mode="before",
+    )
+    @classmethod
+    def _empty_string_means_unset(cls, value: object) -> object:
+        """Treat an empty env value as "not configured" rather than a parse error.
+
+        Docker Compose expands an unset variable to an empty string, so
+        ``FREE_DELIVERY_FROM: ${FREE_DELIVERY_FROM:-}`` reaches pydantic as
+        ``''`` — which is not a decimal, and the container dies on import.
+        Optional money settings must degrade to ``None`` instead.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def _enforce_prod_secrets(self) -> "Settings":
