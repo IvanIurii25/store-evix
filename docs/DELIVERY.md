@@ -165,15 +165,32 @@ order.
 (`POST /orders/{number}/lookup`) withholds `awb_number`**: number + email is a
 weak credential and must not hand out a parcel tracking key.
 
-## 7. What is not built yet
+## 7. Waybills (back-office)
 
-* **P4** — creating and cancelling waybills from the back-office (idempotent,
-  `SELECT FOR UPDATE` on the carrier row), plus the rule that cancelling an order
-  cancels its waybill first (fail-closed).
+`POST` / `DELETE /admin/orders/{number}/np/shipment`, staff-only.
+
+* **Creation is idempotent.** The carrier row is locked `FOR UPDATE` for the
+  whole operation, so two operators clicking at once cannot buy two shipments:
+  the second waits, sees the number the first wrote, and gets `409
+  awb_already_exists`.
+* **A refused creation writes nothing** — claiming a waybill exists when it does
+  not is worse than a retry. A refused cancellation **keeps** our copy of the
+  number, so a live shipment is never hidden.
+* **Cancelling an order cancels its waybill first, fail-closed.** If the carrier
+  refuses, the order is not cancelled either (`502 waybill_cancel_failed`): our
+  records saying "cancelled" while the parcel still travels is the expensive
+  failure.
+* The payload declares the **snapshotted** `parcel_weight_g` and names the
+  recipient from `order.delivery_name` (collected as `np_recipient_name` at
+  checkout — the carrier's address fields carry no name). Payer is the contract
+  when `NOVAPOST_CONTRACT_NUMBER` is set, otherwise the sender.
+
+## 8. What is not built yet
+
 * **P5** — the Celery tracking sweep and the "waybill created" email.
 * Nothing has ever talked to the real carrier: no credentials, no sandbox run.
 
-## 8. Testing
+## 9. Testing
 
 `tests/delivery/` (stub behaviour, config gates, transport via
 `httpx.MockTransport`, the public lookups) and
