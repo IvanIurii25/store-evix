@@ -73,6 +73,11 @@ class _DeliverySelection(BaseModel):
         default=None,
         description="Carrier courier address.",
     )
+    np_recipient_name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Who collects the parcel (required for Nova Post).",
+    )
 
 
 class QuoteRequest(_DeliverySelection):

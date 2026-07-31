@@ -554,3 +554,18 @@ class OrderRepository:
             )
         ).scalars()
         return {row.order_id: row for row in rows}
+
+    async def get_product_weights(
+        self, product_ids: list[int]
+    ) -> dict[int, int | None]:
+        """Return ``{product_id: weight_g}`` for the given products.
+
+        Fallback path for carrier rows created before the parcel weight was
+        snapshotted; batched so it never becomes an N+1 over order lines.
+        """
+        if not product_ids:
+            return {}
+        rows = await self.session.execute(
+            select(Product.id, Product.weight_g).where(Product.id.in_(product_ids))
+        )
+        return {pid: weight for pid, weight in rows.all()}

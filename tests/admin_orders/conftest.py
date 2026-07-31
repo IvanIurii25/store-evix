@@ -28,12 +28,14 @@ from decimal import Decimal
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
 from app.api.routers.admin_orders import router as admin_orders_router
 from app.core.db import get_session
 from app.core.errors import register_exception_handlers
+from app.core.redis import get_redis
 from app.models.order import Order, OrderItem
 from app.models.user import AppUser
 
@@ -59,7 +61,17 @@ def _build_app(db_session: AsyncSession) -> FastAPI:
     async def _override_session() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
+    async def _override_redis():
+        # The waybill endpoints need a Redis; an isolated db keeps carrier token
+        # keys away from the rate-limit and cache tests.
+        client = Redis.from_url("redis://localhost:56379/12", decode_responses=True)
+        try:
+            yield client
+        finally:
+            await client.aclose()
+
     app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_redis] = _override_redis
     return app
 
 

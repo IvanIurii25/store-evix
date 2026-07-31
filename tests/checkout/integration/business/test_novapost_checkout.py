@@ -32,11 +32,13 @@ _BRANCH = {
     "delivery_service": "novapost",
     "delivery_type": "branch",
     "np_division_id": "d-1",
+    "np_recipient_name": "Ion Client",
 }
 _NP_COURIER = {
     "delivery_service": "novapost",
     "delivery_type": "courier",
     "np_settlement_id": "s-1",
+    "np_recipient_name": "Ion Client",
     "np_address": {
         "city": "Chișinău",
         "street": "str. Testului",
@@ -140,7 +142,12 @@ async def test_branch_without_a_pickup_point_is_422(client, add_product) -> None
     await _seed_line(client, add_product)
 
     resp = await client.post(
-        _QUOTE, json={"delivery_service": "novapost", "delivery_type": "branch"}
+        _QUOTE,
+        json={
+            "delivery_service": "novapost",
+            "delivery_type": "branch",
+            "np_recipient_name": "Ion",
+        },
     )
 
     assert resp.status_code == 422, resp.text
@@ -157,6 +164,7 @@ async def test_carrier_courier_without_address_is_422(client, add_product) -> No
             "delivery_service": "novapost",
             "delivery_type": "courier",
             "np_settlement_id": "s-1",
+            "np_recipient_name": "Ion",
         },
     )
 
@@ -362,3 +370,60 @@ async def test_own_order_has_no_carrier_block(client, add_product) -> None:
     assert resp.status_code == 201, resp.text
     assert resp.json()["novapost"] is None
     assert resp.json()["delivery_service"] == "own"
+
+
+async def test_recipient_name_is_required(client, add_product) -> None:
+    """A waybill has to name whoever collects the parcel."""
+    await _seed_line(client, add_product)
+
+    resp = await client.post(
+        _QUOTE,
+        json={
+            "delivery_service": "novapost",
+            "delivery_type": "branch",
+            "np_division_id": "d-1",
+        },
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "novapost_recipient_required"
+
+
+async def test_recipient_name_is_stored_on_the_order(
+    client, add_product, db_session: AsyncSession
+) -> None:
+    """The name lands in the order's delivery_name — the waybill reads it later."""
+    await _seed_line(client, add_product)
+
+    resp = await client.post(_CHECKOUT, json={**_CONTACT, **_BRANCH})
+
+    assert resp.status_code == 201, resp.text
+    order = (
+        await db_session.execute(
+            select(Order).where(Order.number == resp.json()["number"])
+        )
+    ).scalar_one()
+    assert order.delivery_name == "Ion Client"
+
+
+async def test_parcel_weight_is_snapshotted(
+    client, add_product, db_session: AsyncSession
+) -> None:
+    """The quoted weight is kept so a later waybill declares the same parcel."""
+    await _seed_line(client, add_product, qty=3)
+
+    resp = await client.post(_CHECKOUT, json={**_CONTACT, **_BRANCH})
+
+    order = (
+        await db_session.execute(
+            select(Order).where(Order.number == resp.json()["number"])
+        )
+    ).scalar_one()
+    row = (
+        await db_session.execute(
+            select(OrderDeliveryNovaPost).where(
+                OrderDeliveryNovaPost.order_id == order.id
+            )
+        )
+    ).scalar_one()
+    assert row.parcel_weight_g == 3 * 500  # default per-item weight

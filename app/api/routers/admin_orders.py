@@ -19,10 +19,12 @@ integrator when mounting):
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_staff
 from app.core.db import get_session
+from app.core.redis import get_redis
 from app.models.user import AppUser
 from app.schemas.admin_orders import AdminOrderList, TransitionRequest
 from app.schemas.order import OrderOut
@@ -122,6 +124,7 @@ async def transition_order(
     data: TransitionRequest,
     staff: AppUser = Depends(current_staff),
     session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
 ) -> OrderOut:
     """Apply a status/payment transition to an order via the shared machine (§8).
 
@@ -141,7 +144,7 @@ async def transition_order(
     Raises:
         HTTPException: 404 if the order is unknown; 409 for an illegal move.
     """
-    service = AdminOrderService(session)
+    service = AdminOrderService(session, redis)
     order, items = await service.transition(
         number,
         to_status=data.to_status,
@@ -199,3 +202,60 @@ async def refund_order(
 
     order, items = await admin_service.get_order(number)
     return OrderOut.from_order(order, items, await admin_service.novapost(order.id))
+
+
+@router.post("/{number}/np/shipment", response_model=OrderOut)
+async def create_waybill(
+    number: str,
+    _staff: AppUser = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> OrderOut:
+    """Create the Nova Post waybill for one order (idempotent).
+
+    Args:
+        number: The order number.
+        _staff: The authenticated staff user (guards the endpoint).
+        session: Injected async DB session.
+        redis: Injected Redis client (carrier token).
+
+    Returns:
+        OrderOut: The order with the waybill on its carrier block.
+
+    Raises:
+        WaybillExistsError: 409 if a waybill was already created.
+        WaybillMissingError: 404 for a non-carrier order.
+        CarrierUnavailableError: 502 if the carrier refuses / is unreachable.
+    """
+    service = AdminOrderService(session, redis)
+    row = await service.create_waybill(number)
+    order, items = await service.get_order(number)
+    return OrderOut.from_order(order, items, row)
+
+
+@router.delete("/{number}/np/shipment", response_model=OrderOut)
+async def cancel_waybill(
+    number: str,
+    _staff: AppUser = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> OrderOut:
+    """Cancel the Nova Post waybill for one order.
+
+    Args:
+        number: The order number.
+        _staff: The authenticated staff user (guards the endpoint).
+        session: Injected async DB session.
+        redis: Injected Redis client (carrier token).
+
+    Returns:
+        OrderOut: The order with the waybill cleared.
+
+    Raises:
+        WaybillMissingError: 404 if there is no waybill to cancel.
+        CarrierUnavailableError: 502 if the carrier refuses / is unreachable.
+    """
+    service = AdminOrderService(session, redis)
+    row = await service.cancel_waybill(number)
+    order, items = await service.get_order(number)
+    return OrderOut.from_order(order, items, row)

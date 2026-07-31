@@ -20,8 +20,10 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from fastapi import status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import DomainError
 from app.models.order import Order, OrderDeliveryNovaPost, OrderItem
 from app.models.user import AppUser
@@ -59,6 +61,16 @@ class IllegalTransitionError(OrderError):
     code = "illegal_transition"
 
 
+class WaybillCancelFailedError(OrderError):
+    """An order could not be cancelled because its waybill could not be.
+
+    Mapped to HTTP 502 with code ``waybill_cancel_failed``.
+    """
+
+    status_code = status.HTTP_502_BAD_GATEWAY
+    code = "waybill_cancel_failed"
+
+
 class OrderNotFoundError(OrderError):
     """No order exists for the requested number (rendered as a 404 envelope)."""
 
@@ -69,13 +81,16 @@ class OrderNotFoundError(OrderError):
 class OrderService:
     """Enforced order state machine bound to one session (§8)."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, redis: "Redis | None" = None) -> None:
         """Bind the service to a session and its repository.
 
         Args:
             session: Active async session (request-scoped or test-scoped).
         """
         self.session = session
+        # Needed only to cancel a carrier waybill when an order is cancelled;
+        # every other transition works without it.
+        self.redis = redis
         self.repo = OrderRepository(session)
 
     # ------------------------------------------------------------------ #
@@ -190,6 +205,14 @@ class OrderService:
             PAYMENT_TRANSITIONS,
             "payment_status",
         )
+
+        # A cancelled order must not leave a live waybill behind: the parcel
+        # would still travel to a customer who was told the order is off. Done
+        # BEFORE the commit and fail-closed — if the carrier refuses, the order
+        # stays as it was and an operator deals with it, which is cheaper than
+        # our records and the carrier's disagreeing.
+        if to_status in _STOCK_RETURNING_STATUSES:
+            await self._cancel_waybill_if_any(order.id)
 
         after_commit: list[Callable[[], Coroutine[Any, Any, None]]] = []
 
@@ -321,3 +344,40 @@ class OrderService:
             logger.exception(
                 "restock: failed to enqueue notification for product %s", product_id
             )
+
+    async def _cancel_waybill_if_any(self, order_id: int) -> None:
+        """Cancel this order's carrier waybill, if it has one.
+
+        Args:
+            order_id: The order being cancelled.
+
+        Raises:
+            WaybillCancelFailedError: If the carrier could not cancel it. The
+                caller's transition is abandoned, so our state never claims a
+                shipment is off while it is still moving.
+        """
+        row = await self.repo.get_novapost(order_id)
+        if row is None or not row.awb_number:
+            return
+        if self.redis is None or not settings.novapost_enabled:
+            # Carrier turned off after the waybill was created: refuse rather
+            # than silently orphaning a live shipment.
+            raise WaybillCancelFailedError(
+                "Cannot cancel the carrier shipment: integration is unavailable"
+            )
+        from app.services.delivery.novapost_client import NovaPostError
+        from app.services.delivery.novapost_service import NovaPostService
+
+        try:
+            await NovaPostService(self.redis).cancel_shipment(
+                row.awb_id or row.awb_number
+            )
+        except NovaPostError as exc:
+            raise WaybillCancelFailedError(
+                f"Carrier refused to cancel the shipment: {exc}"
+            ) from exc
+        row.awb_id = None
+        row.awb_number = None
+        row.status_code = ""
+        row.status_text = ""
+        row.status_updated_at = None

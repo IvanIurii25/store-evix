@@ -174,6 +174,7 @@ async def quote(
         np_settlement_id=data.np_settlement_id,
         np_division_id=data.np_division_id,
         np_address=data.np_address,
+        np_recipient_name=data.np_recipient_name,
     )
 
 
@@ -237,6 +238,7 @@ async def checkout(
             np_settlement_id=data.np_settlement_id,
             np_division_id=data.np_division_id,
             np_address=data.np_address,
+            np_recipient_name=data.np_recipient_name,
         )
     except MaibError:
         # The order was created (pending) but maib was unreachable; the payment

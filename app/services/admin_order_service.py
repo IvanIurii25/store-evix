@@ -20,11 +20,18 @@ a number is unknown; illegal transitions surface as
 machine (mapped to 409 by the router).
 """
 
+from fastapi import status
+from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.core.errors import DomainError
 from app.models.order import Order, OrderDeliveryNovaPost, OrderItem
 from app.repositories.admin_order_repo import AdminOrderRepository
 from app.repositories.order_repo import OrderRepository
+from app.services.delivery.novapost_client import NovaPostError
+from app.services.delivery.novapost_service import NovaPostService
 from app.services.order_service import (
     OrderNotFoundError,
     OrderService,
@@ -32,22 +39,69 @@ from app.services.order_service import (
 
 # Re-exported for the admin router / tests that import it from here; the
 # canonical definition lives next to the order state machine.
-__all__ = ["AdminOrderService", "OrderNotFoundError"]
+__all__ = [
+    "AdminOrderService",
+    "OrderNotFoundError",
+    "WaybillError",
+    "WaybillExistsError",
+    "WaybillMissingError",
+    "CarrierUnavailableError",
+]
+
+
+class WaybillError(DomainError):
+    """Base class for back-office waybill failures."""
+
+
+class WaybillExistsError(WaybillError):
+    """A waybill already exists for this order.
+
+    Mapped to HTTP 409 with code ``awb_already_exists``. The guard is what makes
+    creation idempotent: a double click must not buy two shipments.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "awb_already_exists"
+
+
+class WaybillMissingError(WaybillError):
+    """The order has no carrier shipment to act on.
+
+    Mapped to HTTP 404 with code ``awb_not_found`` — covers both an own-logistics
+    order and a carrier order whose waybill was never created.
+    """
+
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "awb_not_found"
+
+
+class CarrierUnavailableError(WaybillError):
+    """The carrier refused or could not be reached.
+
+    Mapped to HTTP 502 with code ``carrier_unavailable``. Nothing is written: an
+    operator retries rather than being told a waybill exists when it does not.
+    """
+
+    status_code = status.HTTP_502_BAD_GATEWAY
+    code = "carrier_unavailable"
 
 
 class AdminOrderService:
     """Back-office order operations bound to one session (§10)."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, redis: "Redis | None" = None) -> None:
         """Bind the service to a session and its repositories.
 
         Args:
             session: Active async session (request-scoped or test-scoped).
         """
         self.session = session
+        # Only the carrier operations need it; every other back-office use-case
+        # works without Redis, and so does every existing test.
+        self.redis = redis
         self.admin_repo = AdminOrderRepository(session)
         self.order_repo = OrderRepository(session)
-        self.state_machine = OrderService(session)
+        self.state_machine = OrderService(session, redis)
 
     async def list_orders(
         self,
@@ -177,3 +231,132 @@ class AdminOrderService:
     ) -> dict[int, "OrderDeliveryNovaPost"]:
         """Return carrier rows for a page of orders, keyed by order id."""
         return await self.order_repo.get_novapost_map(order_ids)
+
+    # ------------------------------------------------------------------ #
+    # Waybills (Nova Post)
+    # ------------------------------------------------------------------ #
+    async def create_waybill(self, number: str) -> OrderDeliveryNovaPost:
+        """Create the carrier waybill for one order (idempotent).
+
+        The carrier row is locked ``FOR UPDATE`` for the whole operation, so two
+        operators clicking at once cannot buy two shipments for one order: the
+        second waits, then sees the number the first wrote and is refused.
+
+        Args:
+            number: The order number.
+
+        Returns:
+            OrderDeliveryNovaPost: The updated carrier row.
+
+        Raises:
+            OrderNotFoundError: If no order has that number.
+            WaybillMissingError: If the order does not ship with the carrier.
+            WaybillExistsError: If a waybill was already created.
+            CarrierUnavailableError: If the carrier refuses or is unreachable.
+        """
+        order, row = await self._lock_carrier_row(number)
+        if row.awb_number:
+            raise WaybillExistsError(f"Order {number} already has a waybill")
+
+        items = (await self.order_repo.list_items_for_orders([order.id]))[order.id]
+        weights = await self._parcel_weights(row, items)
+        service = self._carrier()
+        payload = service.build_shipment(
+            order_number=order.number,
+            recipient_name=order.delivery_name or "",
+            phone=order.phone,
+            email=order.email,
+            delivery_type=order.delivery_type,
+            division_id=row.division_id,
+            settlement_id=row.settlement_id,
+            address_parts=row.address_parts,
+            weights_g=weights,
+            insurance=order.subtotal - order.discount_total,
+        )
+        try:
+            response = await service.create_shipment(payload)
+        except NovaPostError as exc:
+            # Nothing is written: telling an operator a waybill exists when it
+            # does not is worse than making them retry.
+            raise CarrierUnavailableError(str(exc)) from exc
+
+        row.awb_data = response
+        row.awb_id = str(response.get("id") or "") or None
+        row.awb_number = str(response.get("number") or "") or None
+        row.status_code = ""
+        row.status_text = str(response.get("status") or "")
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def cancel_waybill(self, number: str) -> OrderDeliveryNovaPost:
+        """Cancel the carrier waybill for one order.
+
+        Args:
+            number: The order number.
+
+        Returns:
+            OrderDeliveryNovaPost: The carrier row with the waybill cleared.
+
+        Raises:
+            OrderNotFoundError: If no order has that number.
+            WaybillMissingError: If there is no waybill to cancel.
+            CarrierUnavailableError: If the carrier refuses or is unreachable.
+        """
+        _order, row = await self._lock_carrier_row(number)
+        if not row.awb_number:
+            raise WaybillMissingError(f"Order {number} has no waybill")
+        try:
+            await self._carrier().cancel_shipment(row.awb_id or row.awb_number)
+        except NovaPostError as exc:
+            # Clearing our copy while the parcel still travels would be worse
+            # than leaving the operator to retry.
+            raise CarrierUnavailableError(str(exc)) from exc
+        row.awb_id = None
+        row.awb_number = None
+        row.status_code = ""
+        row.status_text = ""
+        row.status_updated_at = None
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def _lock_carrier_row(
+        self, number: str
+    ) -> tuple[Order, OrderDeliveryNovaPost]:
+        """Load an order and lock its carrier row for update."""
+        order = await self.order_repo.get_order_by_number(number)
+        if order is None:
+            raise OrderNotFoundError(f"Order not found: {number}")
+        row = (
+            await self.session.execute(
+                select(OrderDeliveryNovaPost)
+                .where(OrderDeliveryNovaPost.order_id == order.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise WaybillMissingError(f"Order {number} is not a Nova Post order")
+        return order, row
+
+    async def _parcel_weights(
+        self, row: OrderDeliveryNovaPost, items: list[OrderItem]
+    ) -> list[int]:
+        """Return the per-item weights the waybill should declare.
+
+        Prefers the snapshot taken at checkout — that is what the customer was
+        quoted for. Rows created before the snapshot existed fall back to the
+        current catalogue, which is the best available answer.
+        """
+        if row.parcel_weight_g:
+            return [row.parcel_weight_g]
+        default = settings.parcel_default_item_weight_g
+        product_ids = [item.product_id for item in items if item.product_id]
+        weights = await self.order_repo.get_product_weights(product_ids)
+        return [(weights.get(item.product_id) or default) * item.qty for item in items]
+
+    def _carrier(self) -> "NovaPostService":
+        """Build the carrier service, or refuse when it is not configured."""
+        if self.redis is None or not settings.novapost_enabled:
+            raise CarrierUnavailableError("Nova Post is not configured")
+        return NovaPostService(self.redis)

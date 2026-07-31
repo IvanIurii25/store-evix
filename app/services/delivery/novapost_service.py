@@ -310,3 +310,111 @@ class NovaPostService:
             settlement_ru = division_ru.get("settlement") or {}
             snap["settlement_name_ru"] = str(settlement_ru.get("name") or "")
         return snap
+
+    # ------------------------------------------------------------------ #
+    # Shipments (waybills)
+    # ------------------------------------------------------------------ #
+    def build_shipment(
+        self,
+        *,
+        order_number: str,
+        recipient_name: str,
+        phone: str,
+        email: str,
+        delivery_type: str,
+        division_id: str | None,
+        settlement_id: str | None,
+        address_parts: dict | None,
+        weights_g: list[int],
+        insurance: Decimal,
+    ) -> dict:
+        """Assemble the waybill payload for one order.
+
+        Args:
+            order_number: Printed on the parcel so the carrier's paperwork and
+                ours refer to the same thing.
+            recipient_name: Who collects it.
+            phone: Recipient phone (the carrier notifies by SMS).
+            email: Recipient email.
+            delivery_type: ``branch``, ``postomat`` or ``courier``.
+            division_id: Pickup point, for a point delivery.
+            settlement_id: City, for a courier delivery.
+            address_parts: Courier address in the carrier's field layout.
+            weights_g: Per-item weights the quote was based on.
+            insurance: Declared value (the goods total).
+
+        Returns:
+            dict: The request body for ``POST /shipments``.
+        """
+        recipient: dict = {
+            "companyTin": "",
+            "companyName": "",
+            "name": recipient_name,
+            "phone": phone,
+            "email": email,
+            "countryCode": "MD",
+        }
+        if delivery_type == COURIER:
+            recipient["settlementId"] = settlement_id
+            recipient["addressParts"] = address_parts or {}
+        else:
+            recipient["divisionId"] = division_id
+
+        parcels = self.build_parcels(weights_g)
+        parcels[0]["parcelDescription"] = f"Order {order_number}"
+        parcels[0]["insuranceCost"] = str(insurance)
+
+        payload: dict = {
+            "status": "ReadyToShip",
+            "clientOrder": order_number,
+            "note": f"Order {order_number}",
+            "parcels": parcels,
+            "sender": {
+                "companyTin": "",
+                "companyName": settings.novapost_sender_company,
+                "name": settings.novapost_sender_name,
+                "phone": settings.novapost_sender_phone,
+                "email": settings.novapost_sender_email,
+                "countryCode": "MD",
+                "divisionId": settings.novapost_sender_division_id,
+            },
+            "recipient": recipient,
+        }
+        # Who pays. With a contract number the carrier bills that contract;
+        # without one the sender (us) pays on handover. The reference hardcodes
+        # a fallback contract belonging to another merchant — we do not.
+        if settings.novapost_contract_number:
+            payload["payerType"] = "ThirdPerson"
+            payload["payerContractNumber"] = settings.novapost_contract_number
+        else:
+            payload["payerType"] = "Sender"
+        return payload
+
+    async def create_shipment(self, payload: dict) -> dict:
+        """Create a waybill at the carrier and return its response."""
+        return await self.client.create_shipment(payload)
+
+    async def cancel_shipment(self, shipment_id: str) -> None:
+        """Cancel a waybill at the carrier."""
+        await self.client.delete_shipment(shipment_id)
+
+    async def tracking(self, numbers: list[str]) -> dict[str, tuple[str, str]]:
+        """Return ``{waybill: (status_code, status_text)}`` for the given numbers.
+
+        Args:
+            numbers: Waybill numbers to look up.
+
+        Returns:
+            dict: Only the entries the carrier answered for.
+        """
+        payload = await self.client.tracking(numbers)
+        out: dict[str, tuple[str, str]] = {}
+        for item in (payload or {}).get("items") or []:
+            number = str(item.get("number") or "")
+            current = item.get("currentStatus") or {}
+            if number:
+                out[number] = (
+                    str(current.get("statusCode") or ""),
+                    str(current.get("status") or ""),
+                )
+        return out

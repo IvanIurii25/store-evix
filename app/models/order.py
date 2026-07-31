@@ -191,6 +191,10 @@ class OrderDeliveryNovaPost(Base):
     calculated_cost: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 2), nullable=True
     )
+    # Parcel weight the quote was based on. Snapshotted so a waybill created days
+    # later declares what the customer was charged for, even if the catalogue
+    # (or the product itself) has changed since.
+    parcel_weight_g: Mapped[int | None] = mapped_column(Integer, nullable=True)
     awb_id: Mapped[str | None] = mapped_column(String, nullable=True)
     awb_number: Mapped[str | None] = mapped_column(String, nullable=True)
     awb_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

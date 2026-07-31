@@ -159,6 +159,18 @@ class CarrierDestinationRequiredError(CheckoutError):
     code = "novapost_destination_required"
 
 
+class CarrierRecipientRequiredError(CheckoutError):
+    """A carrier order was submitted without a recipient name.
+
+    The waybill has to name whoever collects the parcel, and the carrier's
+    address fields do not carry it. Mapped to HTTP 422 with code
+    ``novapost_recipient_required``.
+    """
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "novapost_recipient_required"
+
+
 class DeliveryQuoteUnavailableError(CheckoutError):
     """The carrier could not price this shipment.
 
@@ -227,6 +239,7 @@ class _DeliveryChoice:
         "settlement_id",
         "division_id",
         "np_address",
+        "np_recipient_name",
     )
 
     def __init__(
@@ -239,6 +252,7 @@ class _DeliveryChoice:
         settlement_id: str | None = None,
         division_id: str | None = None,
         np_address: NovaPostAddressIn | None = None,
+        np_recipient_name: str | None = None,
     ) -> None:
         self.service = service
         self.type = delivery_type
@@ -247,6 +261,7 @@ class _DeliveryChoice:
         self.settlement_id = settlement_id
         self.division_id = division_id
         self.np_address = np_address
+        self.np_recipient_name = (np_recipient_name or "").strip() or None
 
     @property
     def is_carrier(self) -> bool:
@@ -277,6 +292,10 @@ class _DeliveryChoice:
         if self.type == COURIER and not (self.settlement_id and self.np_address):
             raise CarrierDestinationRequiredError(
                 "A city and an address are required for Nova Post courier"
+            )
+        if not self.np_recipient_name:
+            raise CarrierRecipientRequiredError(
+                "A recipient name is required for Nova Post delivery"
             )
 
 
@@ -346,6 +365,7 @@ class CheckoutService:
         np_settlement_id: str | None = None,
         np_division_id: str | None = None,
         np_address: NovaPostAddressIn | None = None,
+        np_recipient_name: str | None = None,
     ) -> QuoteOut:
         """Compute the checkout totals without creating an order (§9, idempotent).
 
@@ -378,6 +398,7 @@ class CheckoutService:
             settlement_id=np_settlement_id,
             division_id=np_division_id,
             np_address=np_address,
+            np_recipient_name=np_recipient_name,
         )
         choice.validate()
         _cart, lines = await self._load_cart_lines(user_id, session_token, lang)
@@ -413,6 +434,7 @@ class CheckoutService:
         np_settlement_id: str | None = None,
         np_division_id: str | None = None,
         np_address: NovaPostAddressIn | None = None,
+        np_recipient_name: str | None = None,
     ) -> OrderOut:
         """Create an order from the caller's cart in one transaction (§9.6).
 
@@ -454,13 +476,16 @@ class CheckoutService:
             settlement_id=np_settlement_id,
             division_id=np_division_id,
             np_address=np_address,
+            np_recipient_name=np_recipient_name,
         )
         choice.validate()
         np_snapshot: dict | None = None
         if choice.is_carrier:
-            # The carrier holds the destination; the own-logistics address
-            # snapshot does not apply.
+            # The carrier holds the destination, but the recipient name still
+            # belongs on the order: the waybill has to name whoever collects it,
+            # and the carrier's address fields do not carry a name.
             snap_name, snap_city, snap_street, snap_zip = _EMPTY_SNAPSHOT
+            snap_name = choice.np_recipient_name
             delivery_address_id = None
             np_snapshot = await self._carrier_snapshot(choice)
         else:
@@ -713,6 +738,7 @@ class CheckoutService:
                 calculated_cost=(
                     totals.delivery_cost if totals.delivery_cost > _ZERO else None
                 ),
+                parcel_weight_g=sum(line.weight_g * line.qty for line in lines),
                 **(np_snapshot or {}),
             )
             self.session.add(carrier_row)
