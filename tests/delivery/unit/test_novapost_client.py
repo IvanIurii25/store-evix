@@ -11,9 +11,12 @@ endpoint contract is reconstructed from ecom-obr rather than official docs, and
 this is the seam where that guess will break first.
 """
 
+import json
+
 import httpx
 import pytest
 
+from app.core.config import settings
 from app.services.delivery import novapost_client as client_module
 from app.services.delivery.novapost_client import NovaPostClient, NovaPostError
 
@@ -212,3 +215,115 @@ async def test_accept_language_is_forwarded(monkeypatch) -> None:
     await api.settlements("x")
 
     assert langs == ["ru"]
+
+
+async def test_calculate_sends_sender_and_parcels(monkeypatch) -> None:
+    """The cost call carries our sender branch and the parcel set."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/clients/authorization"):
+            return httpx.Response(200, json={"jwt": "tok"})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"services": [{"cost": "75.00"}]})
+
+    _install(monkeypatch, handler)
+    monkeypatch.setattr(settings, "novapost_sender_division_id", "sender-1")
+    monkeypatch.setattr(settings, "novapost_contract_number", "CNP-1")
+    api = _client(FakeRedis())
+
+    payload = await api.calculate({"divisionId": "d-1"}, [{"actualWeight": 900}])
+
+    assert payload["services"][0]["cost"] == "75.00"
+    body = bodies[0]
+    assert body["sender"]["divisionId"] == "sender-1"
+    assert body["payerContractNumber"] == "CNP-1"
+    assert body["parcels"][0]["actualWeight"] == 900
+    assert body["recipient"] == {"countryCode": "MD", "divisionId": "d-1"}
+
+
+async def test_create_shipment_returns_the_waybill(monkeypatch) -> None:
+    """A created shipment hands back the carrier's payload verbatim."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/clients/authorization"):
+            return httpx.Response(200, json={"jwt": "tok"})
+        return httpx.Response(200, json={"id": "1", "number": "AWB-1"})
+
+    _install(monkeypatch, handler)
+    api = _client(FakeRedis())
+
+    assert (await api.create_shipment({"parcels": []}))["number"] == "AWB-1"
+
+
+async def test_tracking_passes_every_number(monkeypatch) -> None:
+    """All requested waybills go out in one query."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/clients/authorization"):
+            return httpx.Response(200, json={"jwt": "tok"})
+        seen.extend(request.url.params.get_list("numbers[]"))
+        return httpx.Response(200, json={"items": []})
+
+    _install(monkeypatch, handler)
+    api = _client(FakeRedis())
+
+    await api.tracking(["A", "B"])
+
+    assert seen == ["A", "B"]
+
+
+async def test_delete_shipment_tolerates_an_empty_body(monkeypatch) -> None:
+    """A 204 with no body is a success, not a JSON error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/clients/authorization"):
+            return httpx.Response(200, json={"jwt": "tok"})
+        return httpx.Response(204)
+
+    _install(monkeypatch, handler)
+    api = _client(FakeRedis())
+
+    assert await api.delete_shipment("AWB-1") is None
+
+
+async def test_connection_failure_becomes_a_domain_error(monkeypatch) -> None:
+    """A refused connection is reported as NovaPostError, not httpx."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/clients/authorization"):
+            return httpx.Response(200, json={"jwt": "tok"})
+        raise httpx.ConnectError("refused")
+
+    _install(monkeypatch, handler)
+    api = _client(FakeRedis())
+
+    with pytest.raises(NovaPostError, match="request failed"):
+        await api.settlements("x")
+
+
+async def test_authorization_failure_becomes_a_domain_error(monkeypatch) -> None:
+    """A carrier that will not issue a token fails with a clear message."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="maintenance")
+
+    _install(monkeypatch, handler)
+
+    with pytest.raises(NovaPostError, match="authorization failed"):
+        await _client(FakeRedis()).settlements("x")
+
+
+async def test_non_json_body_is_reported(monkeypatch) -> None:
+    """An HTML error page surfaces as its text, not as a decode crash."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/clients/authorization"):
+            return httpx.Response(200, json={"jwt": "tok"})
+        return httpx.Response(500, text="<html>gateway</html>")
+
+    _install(monkeypatch, handler)
+
+    with pytest.raises(NovaPostError, match="gateway"):
+        await _client(FakeRedis()).settlements("x")

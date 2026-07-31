@@ -222,3 +222,23 @@ async def test_lookups_are_rate_limited(client: AsyncClient, carrier_on) -> None
 
     assert statuses[-1] == 429
     assert statuses.count(200) == budget
+
+
+async def test_division_lookup_failure_becomes_502(
+    client: AsyncClient, carrier_on, monkeypatch
+) -> None:
+    """The pickup-point lookup degrades the same way the city one does."""
+    from app.services.delivery import novapost_stub
+    from app.services.delivery.novapost_client import NovaPostError
+
+    async def boom(self, settlement_id, category, *, query="", limit=25):
+        raise NovaPostError("carrier down")
+
+    monkeypatch.setattr(novapost_stub.NovaPostStub, "divisions", boom)
+
+    resp = await client.post(
+        _DIVISIONS, json={"settlement_id": "s-1", "category": "branch"}
+    )
+
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "delivery_lookup_unavailable"
