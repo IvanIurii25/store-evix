@@ -185,12 +185,31 @@ weak credential and must not hand out a parcel tracking key.
   checkout — the carrier's address fields carry no name). Payer is the contract
   when `NOVAPOST_CONTRACT_NUMBER` is set, otherwise the sender.
 
-## 8. What is not built yet
+## 8. Tracking and notifications
 
-* **P5** — the Celery tracking sweep and the "waybill created" email.
-* Nothing has ever talked to the real carrier: no credentials, no sandbox run.
+`novapost.sync_statuses` (Celery beat, every 30 min) polls the carrier for every
+**open** waybill and stores `status_code` + `status_text` + `status_updated_at`.
 
-## 9. Testing
+* A delivered / returned / lost / cancelled parcel is never asked about again —
+  otherwise the sweep would grow with order history forever.
+* An unchanged answer writes nothing, so `status_updated_at` keeps meaning "when
+  it actually moved".
+* A carrier outage costs that run only: rows stay open and are retried.
+* The task no-ops when the carrier is off.
+
+Creating a waybill enqueues `novapost.waybill_email` — the customer's tracking
+number plus the pickup point. Enqueued **after** the commit and swallowed on
+failure: a broker hiccup must not fail an operation whose shipment already
+exists at the carrier.
+
+## 9. What is not built yet
+
+* Nothing has ever talked to the real carrier: no credentials, no sandbox run,
+  so §4 remains provisional.
+* The storefront shows the tracking status but does not link to the carrier's
+  tracking page (needs the real URL format).
+
+## 10. Testing
 
 `tests/delivery/` (stub behaviour, config gates, transport via
 `httpx.MockTransport`, the public lookups) and
