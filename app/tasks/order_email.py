@@ -29,6 +29,7 @@ def send_order_confirmation_email(
     to: str,
     order_number: str,
     total_str: str,
+    delivery: str = "",
 ) -> None:
     """Send the order-confirmation email off the request path (durable, retried).
 
@@ -43,5 +44,6 @@ def send_order_confirmation_email(
             to=to,
             order_number=order_number,
             total=Decimal(total_str),
+            delivery=delivery,
         )
     )

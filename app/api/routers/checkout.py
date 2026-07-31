@@ -19,6 +19,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import guest_or_user
@@ -26,6 +27,7 @@ from app.api.ratelimit import rate_limiter
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.errors import error_response
+from app.core.redis import get_redis
 from app.models.user import AppUser
 from app.schemas.order import (
     CheckoutRequest,
@@ -135,6 +137,7 @@ async def quote(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
     lang: str = Query(default="ro", description="Display language (ru|ro)."),
 ) -> QuoteOut:
     """Return the checkout totals without creating an order (§9, idempotent).
@@ -158,7 +161,7 @@ async def quote(
             leaf status + code by the registered handler).
     """
     user_id, token = _caller_identity(request, user)
-    service = CheckoutService(session)
+    service = CheckoutService(session, redis)
     return await service.quote(
         user_id=user_id,
         session_token=token,
@@ -167,6 +170,10 @@ async def quote(
         delivery_address=data.delivery_address,
         promo_code=data.promo_code,
         lang=lang,
+        delivery_service=data.delivery_service,
+        np_settlement_id=data.np_settlement_id,
+        np_division_id=data.np_division_id,
+        np_address=data.np_address,
     )
 
 
@@ -182,6 +189,7 @@ async def checkout(
     request: Request,
     user: AppUser | None = Depends(guest_or_user),
     session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
     lang: str = Query(default="ro", description="Snapshot language (ru|ro)."),
 ) -> OrderOut | JSONResponse:
     """Create a COD order from the caller's cart atomically (§9.6).
@@ -211,7 +219,7 @@ async def checkout(
     """
     _validate_payment_method(data.payment_method)
     user_id, token = _caller_identity(request, user)
-    service = CheckoutService(session)
+    service = CheckoutService(session, redis)
     try:
         return await service.checkout(
             user_id=user_id,
@@ -225,6 +233,10 @@ async def checkout(
             payment_method=data.payment_method,
             client_ip=_client_ip(request),
             lang=lang,
+            delivery_service=data.delivery_service,
+            np_settlement_id=data.np_settlement_id,
+            np_division_id=data.np_division_id,
+            np_address=data.np_address,
         )
     except MaibError:
         # The order was created (pending) but maib was unreachable; the payment

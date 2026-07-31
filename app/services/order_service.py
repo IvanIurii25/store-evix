@@ -23,7 +23,7 @@ from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DomainError
-from app.models.order import Order, OrderItem
+from app.models.order import Order, OrderDeliveryNovaPost, OrderItem
 from app.models.user import AppUser
 from app.repositories.order_repo import OrderRepository
 
@@ -83,7 +83,7 @@ class OrderService:
     # ------------------------------------------------------------------ #
     async def list_for_user(
         self, user_id: int
-    ) -> list[tuple[Order, list[OrderItem]]]:
+    ) -> list[tuple[Order, list[OrderItem], OrderDeliveryNovaPost | None]]:
         """Return the user's orders (newest first) paired with their lines (§4).
 
         Lines are fetched in a single batched query (no per-order N+1).
@@ -92,20 +92,24 @@ class OrderService:
             user_id: The authenticated user's id.
 
         Returns:
-            list: ``(order, items)`` tuples, newest order first.
+            list: ``(order, items, carrier)`` tuples, newest order first;
+            ``carrier`` is ``None`` for own-logistics orders.
         """
         orders = await self.repo.list_orders_for_user(user_id)
-        items_by_order = await self.repo.list_items_for_orders(
-            [order.id for order in orders]
-        )
-        return [(order, items_by_order[order.id]) for order in orders]
+        order_ids = [order.id for order in orders]
+        items_by_order = await self.repo.list_items_for_orders(order_ids)
+        carriers = await self.repo.get_novapost_map(order_ids)
+        return [
+            (order, items_by_order[order.id], carriers.get(order.id))
+            for order in orders
+        ]
 
     async def get_for_user(
         self,
         number: str,
         user: AppUser | None,
         email: str | None,
-    ) -> tuple[Order, list[OrderItem]]:
+    ) -> tuple[Order, list[OrderItem], OrderDeliveryNovaPost | None]:
         """Load an order the caller may view (JWT owner or matching email) (§9).
 
         A missing order and one the caller is not authorized for are
@@ -119,7 +123,8 @@ class OrderService:
                 owner-only access.
 
         Returns:
-            tuple: ``(order, items)``.
+            tuple: ``(order, items, carrier)``; ``carrier`` is ``None`` for
+            own-logistics orders.
 
         Raises:
             OrderNotFoundError: If the order is absent or not authorized to the
@@ -129,12 +134,10 @@ class OrderService:
         if order is None or not self._authorized(order, user, email):
             raise OrderNotFoundError(f"Order not found: {number}")
         items = (await self.repo.list_items_for_orders([order.id]))[order.id]
-        return order, items
+        return order, items, await self.repo.get_novapost(order.id)
 
     @staticmethod
-    def _authorized(
-        order: Order, user: AppUser | None, email: str | None
-    ) -> bool:
+    def _authorized(order: Order, user: AppUser | None, email: str | None) -> bool:
         """Return whether the caller may view ``order`` (JWT owner or guest email).
 
         Args:

@@ -80,8 +80,12 @@ async def list_orders(
         page=page,
         page_size=page_size,
     )
+    carriers = await service.novapost_map([order.id for order, _items in pairs])
     return AdminOrderList(
-        data=[OrderOut.from_order(order, items) for order, items in pairs],
+        data=[
+            OrderOut.from_order(order, items, carriers.get(order.id))
+            for order, items in pairs
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -109,7 +113,7 @@ async def get_order(
     """
     service = AdminOrderService(session)
     order, items = await service.get_order(number)
-    return OrderOut.from_order(order, items)
+    return OrderOut.from_order(order, items, await service.novapost(order.id))
 
 
 @router.post("/{number}/transition", response_model=OrderOut)
@@ -144,7 +148,7 @@ async def transition_order(
         to_payment_status=data.to_payment_status,
         changed_by=f"admin:{staff.id}",
     )
-    return OrderOut.from_order(order, items)
+    return OrderOut.from_order(order, items, await service.novapost(order.id))
 
 
 @router.post("/{number}/refund", response_model=OrderOut)
@@ -194,4 +198,4 @@ async def refund_order(
         ) from exc
 
     order, items = await admin_service.get_order(number)
-    return OrderOut.from_order(order, items)
+    return OrderOut.from_order(order, items, await admin_service.novapost(order.id))

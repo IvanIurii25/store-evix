@@ -22,7 +22,7 @@ machine (mapped to 409 by the router).
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order import Order, OrderItem
+from app.models.order import Order, OrderDeliveryNovaPost, OrderItem
 from app.repositories.admin_order_repo import AdminOrderRepository
 from app.repositories.order_repo import OrderRepository
 from app.services.order_service import (
@@ -167,3 +167,13 @@ class AdminOrderService:
         if order is None:
             raise OrderNotFoundError(f"Order not found: {number}")
         return order
+
+    async def novapost(self, order_id: int) -> "OrderDeliveryNovaPost | None":
+        """Return the carrier row for one order (back-office detail view)."""
+        return await self.order_repo.get_novapost(order_id)
+
+    async def novapost_map(
+        self, order_ids: list[int]
+    ) -> dict[int, "OrderDeliveryNovaPost"]:
+        """Return carrier rows for a page of orders, keyed by order id."""
+        return await self.order_repo.get_novapost_map(order_ids)

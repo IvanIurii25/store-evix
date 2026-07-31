@@ -50,9 +50,7 @@ async def _make_variable(
         value = AttributeValue(attribute_id=attr.id)
         session.add(value)
         await session.flush()
-        session.add(
-            AttributeValueTranslation(value_id=value.id, lang="ro", value=ro)
-        )
+        session.add(AttributeValueTranslation(value_id=value.id, lang="ro", value=ro))
         variant = ProductVariant(
             product_id=product_id,
             code=f"VP-{product_id}-{key}",
@@ -74,7 +72,11 @@ async def _make_variable(
 async def test_cart_add_requires_and_prices_variant(db_session, add_product):
     """Variable product: add needs a valid variant; cart shows its price + label."""
     ids = await _make_variable(
-        db_session, add_product, product_id=600, prices=("179.00", "249.00"), qtys=(5, 5)
+        db_session,
+        add_product,
+        product_id=600,
+        prices=("179.00", "249.00"),
+        qtys=(5, 5),
     )
     service = CartService(db_session)
 
@@ -105,7 +107,11 @@ async def test_cart_add_simple_forbids_variant(db_session, add_product):
 async def test_quick_buy_decrements_variant_stock_not_product(db_session, add_product):
     """quick_buy on a variant decrements that variant's qty and snapshots options."""
     ids = await _make_variable(
-        db_session, add_product, product_id=602, prices=("179.00", "249.00"), qtys=(4, 9)
+        db_session,
+        add_product,
+        product_id=602,
+        prices=("179.00", "249.00"),
+        qtys=(4, 9),
     )
     service = CheckoutService(db_session)
 

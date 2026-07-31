@@ -25,7 +25,12 @@ from sqlalchemy.orm import aliased
 
 from app.models.cart import Cart, CartItem
 from app.models.catalog import Product, ProductTranslation, ProductVariant
-from app.models.order import Order, OrderItem, OrderStatusHistory
+from app.models.order import (
+    Order,
+    OrderDeliveryNovaPost,
+    OrderItem,
+    OrderStatusHistory,
+)
 
 # Status of a live, still-editable cart (§2.3): only ``draft`` carts convert.
 ACTIVE_CART_STATUS: str = "draft"
@@ -297,6 +302,7 @@ class OrderRepository:
         total: Decimal,
         delivery_type: str,
         delivery_address_id: int | None,
+        delivery_service: str = "own",
         delivery_name: str | None = None,
         delivery_city: str | None = None,
         delivery_street: str | None = None,
@@ -340,6 +346,7 @@ class OrderRepository:
             delivery_cost=delivery_cost,
             total=total,
             delivery_type=delivery_type,
+            delivery_service=delivery_service,
             delivery_address_id=delivery_address_id,
             delivery_name=delivery_name,
             delivery_city=delivery_city,
@@ -511,3 +518,39 @@ class OrderRepository:
         """
         stmt = select(func.count()).where(OrderStatusHistory.order_id == order_id)
         return int((await self.session.scalar(stmt)) or 0)
+
+    async def get_novapost(self, order_id: int) -> OrderDeliveryNovaPost | None:
+        """Return the carrier row for one order, or ``None`` for own logistics.
+
+        Args:
+            order_id: The order to look up.
+
+        Returns:
+            OrderDeliveryNovaPost | None: The carrier row when present.
+        """
+        return await self.session.get(OrderDeliveryNovaPost, order_id)
+
+    async def get_novapost_map(
+        self, order_ids: list[int]
+    ) -> dict[int, OrderDeliveryNovaPost]:
+        """Return carrier rows for several orders, keyed by order id.
+
+        Batched on purpose: order lists render one row per order, and a per-row
+        lookup would be an N+1 on the account and back-office list pages.
+
+        Args:
+            order_ids: Orders to look up.
+
+        Returns:
+            dict[int, OrderDeliveryNovaPost]: Present rows only.
+        """
+        if not order_ids:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(OrderDeliveryNovaPost).where(
+                    OrderDeliveryNovaPost.order_id.in_(order_ids)
+                )
+            )
+        ).scalars()
+        return {row.order_id: row for row in rows}

@@ -69,3 +69,26 @@ async def test_unreadable_cache_entry_is_ignored() -> None:
     rows = await service.settlements("chi")
 
     assert [r.name for r in rows] == ["Chișinău"]
+
+
+async def test_parcel_uses_the_greater_of_actual_and_volumetric() -> None:
+    """The parcel declares real weight AND volume, so the carrier can bill either.
+
+    ecom-obr sets ``volumetricWeight = actualWeight``, which under-declares a
+    bulky-but-light order — the difference comes back as an invoice.
+    """
+    service = NovaPostService(BrokenRedis())
+
+    parcel = service.build_parcels([200, 300])[0]
+
+    assert parcel["actualWeight"] == 500
+    # 250×350×200 mm = 17 500 cm³; at the default divisor 5000 → 3.5 kg.
+    assert parcel["volumetricWeight"] == 3500
+    assert parcel["width"] and parcel["length"] and parcel["height"]
+
+
+async def test_parcel_falls_back_to_the_default_weight() -> None:
+    """An empty weight list is priced as the configured default, not as zero."""
+    service = NovaPostService(BrokenRedis())
+
+    assert service.build_parcels([])[0]["actualWeight"] > 0

@@ -53,6 +53,7 @@ def _render_confirmation(
     order_number: str,
     total: Decimal | str,
     currency: str,
+    delivery: str = "",
 ) -> EmailMessage:
     """Build the order-confirmation :class:`EmailMessage`.
 
@@ -61,6 +62,8 @@ def _render_confirmation(
         order_number: The created order number.
         total: The order grand total.
         currency: Currency code shown next to the total.
+        delivery: Human-readable delivery line (method plus the pickup point or
+            address). Empty keeps the previous body verbatim.
 
     Returns:
         EmailMessage: A ready-to-send message with subject, sender and body.
@@ -69,9 +72,13 @@ def _render_confirmation(
     message["From"] = settings.email_from
     message["To"] = to
     message["Subject"] = f"Order {order_number} confirmed"
+    # Without this line a carrier order tells the customer nothing about where
+    # to collect the parcel — the whole point of choosing a pickup point.
+    delivery_block = f"Delivery: {delivery}\n" if delivery else ""
     message.set_content(
         f"Thank you for your order!\n\n"
         f"Order number: {order_number}\n"
+        f"{delivery_block}"
         f"Total: {total} {currency}\n\n"
         f"{_COD_INSTRUCTION}\n"
     )
@@ -156,6 +163,7 @@ async def send_order_confirmation(
     order_number: str,
     total: Decimal | str,
     currency: str | None = None,
+    delivery: str = "",
 ) -> None:
     """Render and dispatch the order-confirmation email (§9.8).
 
@@ -179,6 +187,7 @@ async def send_order_confirmation(
         order_number=order_number,
         total=total,
         currency=currency or settings.currency,
+        delivery=delivery,
     )
     await _dispatch(message)
 

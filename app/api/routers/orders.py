@@ -40,8 +40,10 @@ async def list_orders(
         list[OrderOut]: The user's orders with their lines.
     """
     service = OrderService(session)
-    pairs = await service.list_for_user(user.id)
-    return [OrderOut.from_order(order, items) for order, items in pairs]
+    rows = await service.list_for_user(user.id)
+    return [
+        OrderOut.from_order(order, items, carrier) for order, items, carrier in rows
+    ]
 
 
 @router.get("/{number}", response_model=OrderOut)
@@ -69,8 +71,8 @@ async def get_order(
             caller (rendered by the unified ``DomainError`` handler).
     """
     service = OrderService(session)
-    order, items = await service.get_for_user(number, user, None)
-    return OrderOut.from_order(order, items)
+    order, items, carrier = await service.get_for_user(number, user, None)
+    return OrderOut.from_order(order, items, carrier)
 
 
 @router.post("/{number}/lookup", response_model=OrderOut)
@@ -101,5 +103,7 @@ async def lookup_order(
             match (rendered by the unified ``DomainError`` handler).
     """
     service = OrderService(session)
-    order, items = await service.get_for_user(number, user, payload.email)
-    return OrderOut.from_order(order, items)
+    order, items, carrier = await service.get_for_user(number, user, payload.email)
+    # Guest lookup: number + email is a weak credential, so the waybill number
+    # (a tracking key for the parcel) is withheld — see NovaPostOrderOut.
+    return OrderOut.from_order(order, items, carrier, hide_awb=user is None)

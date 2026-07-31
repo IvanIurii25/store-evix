@@ -20,18 +20,24 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lang import normalize_lang
 from app.core.config import settings
 from app.core.errors import DomainError
 from app.models.cart import Cart
-from app.models.order import OrderItem
+from app.models.order import OrderDeliveryNovaPost, OrderItem
 from app.models.user import Address
 from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.order_repo import NAME_LANG, OrderRepository
 from app.repositories.user_repo import UserRepository
-from app.schemas.order import DeliveryAddressIn, OrderOut, QuoteOut
+from app.schemas.order import (
+    DeliveryAddressIn,
+    NovaPostAddressIn,
+    OrderOut,
+    QuoteOut,
+)
 from app.services.payment.payment_service import PaymentService
 from app.services.promo_service import PromoService
 from app.tasks.order_email import send_order_confirmation_email
@@ -41,6 +47,26 @@ logger = logging.getLogger(__name__)
 # Delivery types (§9.4). ``courier`` requires an address; ``pickup`` is free.
 PICKUP: str = "pickup"
 COURIER: str = "courier"
+BRANCH: str = "branch"
+POSTOMAT: str = "postomat"
+
+# Who delivers. ``own`` is pickup / our flat-rate courier; ``novapost`` is the
+# carrier, whose price comes from its API and whose destination is a city plus
+# either a pickup point or a street address.
+OWN: str = "own"
+NOVAPOST: str = "novapost"
+
+# The (service, type) pairs this shop offers. Anything else is a 422 rather
+# than a silently mispriced order.
+_VALID_METHODS: frozenset[tuple[str, str]] = frozenset(
+    {
+        (OWN, PICKUP),
+        (OWN, COURIER),
+        (NOVAPOST, BRANCH),
+        (NOVAPOST, POSTOMAT),
+        (NOVAPOST, COURIER),
+    }
+)
 
 # Payment methods. ``cod`` is the default (unchanged path); ``card`` triggers the
 # maib payment initiation after the order is persisted.
@@ -101,6 +127,52 @@ _DeliverySnapshot = tuple[str | None, str | None, str | None, str | None]
 _EMPTY_SNAPSHOT: _DeliverySnapshot = (None, None, None, None)
 
 
+class InvalidDeliveryMethodError(CheckoutError):
+    """The (service, type) pair is not a method this shop offers.
+
+    Mapped to HTTP 422 with code ``invalid_delivery_method``.
+    """
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "invalid_delivery_method"
+
+
+class CarrierDisabledError(CheckoutError):
+    """A carrier method was requested while the integration is off.
+
+    Mapped to HTTP 400 with code ``novapost_disabled``.
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "novapost_disabled"
+
+
+class CarrierDestinationRequiredError(CheckoutError):
+    """A carrier method was requested without its destination.
+
+    A pickup point needs ``np_division_id``; the carrier's courier needs
+    ``np_settlement_id`` plus an address. Mapped to HTTP 422 with code
+    ``novapost_destination_required``.
+    """
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "novapost_destination_required"
+
+
+class DeliveryQuoteUnavailableError(CheckoutError):
+    """The carrier could not price this shipment.
+
+    Mapped to HTTP 502 with code ``delivery_quote_unavailable``. Deliberately
+    fail-closed: no order is created and no fallback price is invented. Quoting
+    a number the carrier never agreed to means selling delivery at a loss, and
+    the customer can still pick pickup or our own courier, which have no
+    external dependency.
+    """
+
+    status_code = status.HTTP_502_BAD_GATEWAY
+    code = "delivery_quote_unavailable"
+
+
 class OutOfStockError(CheckoutError):
     """A line's requested quantity exceeds available stock (§9.2 / §9.6).
 
@@ -140,10 +212,78 @@ class ProductNotFoundError(CheckoutError):
         )
 
 
+class _DeliveryChoice:
+    """The customer's delivery selection, validated as a unit.
+
+    Groups the six request fields that only make sense together, so the rules
+    live in one place instead of being re-checked at every call site.
+    """
+
+    __slots__ = (
+        "service",
+        "type",
+        "address_id",
+        "address",
+        "settlement_id",
+        "division_id",
+        "np_address",
+    )
+
+    def __init__(
+        self,
+        *,
+        service: str,
+        delivery_type: str,
+        address_id: int | None = None,
+        address: DeliveryAddressIn | None = None,
+        settlement_id: str | None = None,
+        division_id: str | None = None,
+        np_address: NovaPostAddressIn | None = None,
+    ) -> None:
+        self.service = service
+        self.type = delivery_type
+        self.address_id = address_id
+        self.address = address
+        self.settlement_id = settlement_id
+        self.division_id = division_id
+        self.np_address = np_address
+
+    @property
+    def is_carrier(self) -> bool:
+        """True when the shipment is handed to Nova Post."""
+        return self.service == NOVAPOST
+
+    def validate(self) -> None:
+        """Reject a selection this shop cannot fulfil.
+
+        Raises:
+            InvalidDeliveryMethodError: Unknown (service, type) combination.
+            CarrierDisabledError: Carrier method while the integration is off.
+            CarrierDestinationRequiredError: Carrier method without a
+                destination (pickup point, or city + address).
+        """
+        if (self.service, self.type) not in _VALID_METHODS:
+            raise InvalidDeliveryMethodError(
+                f"Unsupported delivery method: {self.service}/{self.type}"
+            )
+        if not self.is_carrier:
+            return
+        if not settings.novapost_enabled:
+            raise CarrierDisabledError("Nova Post delivery is not available")
+        if self.type in (BRANCH, POSTOMAT) and not self.division_id:
+            raise CarrierDestinationRequiredError(
+                "A Nova Post pickup point is required"
+            )
+        if self.type == COURIER and not (self.settlement_id and self.np_address):
+            raise CarrierDestinationRequiredError(
+                "A city and an address are required for Nova Post courier"
+            )
+
+
 class _PricedLine:
     """A resolved cart line ready to price / persist (internal to checkout)."""
 
-    __slots__ = ("product_id", "variant_id", "name", "price", "qty")
+    __slots__ = ("product_id", "variant_id", "name", "price", "qty", "weight_g")
 
     def __init__(
         self,
@@ -152,12 +292,17 @@ class _PricedLine:
         price: Decimal,
         qty: int,
         variant_id: int | None = None,
+        weight_g: int | None = None,
     ) -> None:
         self.product_id = product_id
         self.variant_id = variant_id
         self.name = name
         self.price = price
         self.qty = qty
+        # Effective shipping weight of ONE unit. Resolved when the line is
+        # loaded (variant overrides product, then the configured default) so
+        # pricing a parcel needs no extra queries.
+        self.weight_g = weight_g or settings.parcel_default_item_weight_g
 
     @property
     def line_total(self) -> Decimal:
@@ -168,13 +313,17 @@ class _PricedLine:
 class CheckoutService:
     """Checkout use-cases bound to one session (§3 service layer)."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, redis: "Redis | None" = None) -> None:
         """Bind the service to a session and its repository.
 
         Args:
             session: Active async session (request-scoped or test-scoped).
+            redis: Client used to reach the carrier (token + lookup cache).
+                Optional so the own-logistics paths — and every existing test —
+                need no Redis at all.
         """
         self.session = session
+        self.redis = redis
         self.repo = OrderRepository(session)
         self.user_repo = UserRepository(session)
         self.promo_service = PromoService(session)
@@ -193,6 +342,10 @@ class CheckoutService:
         delivery_address: DeliveryAddressIn | None = None,
         promo_code: str | None = None,
         lang: str = NAME_LANG,
+        delivery_service: str = OWN,
+        np_settlement_id: str | None = None,
+        np_division_id: str | None = None,
+        np_address: NovaPostAddressIn | None = None,
     ) -> QuoteOut:
         """Compute the checkout totals without creating an order (§9, idempotent).
 
@@ -217,19 +370,26 @@ class CheckoutService:
                 submit before learning the id is unusable).
             PromoError: If ``promo_code`` is supplied but not usable.
         """
+        choice = _DeliveryChoice(
+            service=delivery_service,
+            delivery_type=delivery_type,
+            address_id=delivery_address_id,
+            address=delivery_address,
+            settlement_id=np_settlement_id,
+            division_id=np_division_id,
+            np_address=np_address,
+        )
+        choice.validate()
         _cart, lines = await self._load_cart_lines(user_id, session_token, lang)
         # Validate ownership even though the delivery cost is owner-independent:
         # a foreign id must not even be quotable.
-        await self._resolve_delivery_snapshot(
-            user_id, delivery_type, delivery_address_id, delivery_address
-        )
+        if not choice.is_carrier:
+            await self._resolve_delivery_snapshot(
+                user_id, delivery_type, delivery_address_id, delivery_address
+            )
         discount_total = await self._resolve_discount(lines, promo_code)
-        return self._quote_from_lines(
-            lines,
-            delivery_type,
-            delivery_address_id,
-            delivery_address,
-            discount_total=discount_total,
+        return await self._quote_from_lines(
+            lines, choice, discount_total=discount_total
         )
 
     # ------------------------------------------------------------------ #
@@ -249,6 +409,10 @@ class CheckoutService:
         payment_method: str = "cod",
         client_ip: str | None = None,
         lang: str = NAME_LANG,
+        delivery_service: str = OWN,
+        np_settlement_id: str | None = None,
+        np_division_id: str | None = None,
+        np_address: NovaPostAddressIn | None = None,
     ) -> OrderOut:
         """Create an order from the caller's cart in one transaction (§9.6).
 
@@ -282,25 +446,39 @@ class CheckoutService:
             PromoError: If ``promo_code`` is supplied but not usable.
         """
         cart, lines = await self._load_cart_lines(user_id, session_token, lang)
-        (
-            snap_name,
-            snap_city,
-            snap_street,
-            snap_zip,
-        ) = await self._resolve_delivery_snapshot(
-            user_id, delivery_type, delivery_address_id, delivery_address
+        choice = _DeliveryChoice(
+            service=delivery_service,
+            delivery_type=delivery_type,
+            address_id=delivery_address_id,
+            address=delivery_address,
+            settlement_id=np_settlement_id,
+            division_id=np_division_id,
+            np_address=np_address,
         )
+        choice.validate()
+        np_snapshot: dict | None = None
+        if choice.is_carrier:
+            # The carrier holds the destination; the own-logistics address
+            # snapshot does not apply.
+            snap_name, snap_city, snap_street, snap_zip = _EMPTY_SNAPSHOT
+            delivery_address_id = None
+            np_snapshot = await self._carrier_snapshot(choice)
+        else:
+            (
+                snap_name,
+                snap_city,
+                snap_street,
+                snap_zip,
+            ) = await self._resolve_delivery_snapshot(
+                user_id, delivery_type, delivery_address_id, delivery_address
+            )
         # Re-validate the coupon server-side: the discount is recomputed, never
         # taken from the client. A promo that expired between quote and checkout
         # raises here and no order is created. ``lock=True`` serializes concurrent
         # redemptions of a usage-limited code so the limit cannot be overshot.
         discount_total = await self._resolve_discount(lines, promo_code, lock=True)
-        totals = self._quote_from_lines(
-            lines,
-            delivery_type,
-            delivery_address_id,
-            delivery_address,
-            discount_total=discount_total,
+        totals = await self._quote_from_lines(
+            lines, choice, discount_total=discount_total
         )
         applied_code = promo_code if discount_total > _ZERO else None
 
@@ -316,6 +494,8 @@ class CheckoutService:
             promo_code=applied_code,
             cart_id=cart.id,
             payment_method=payment_method,
+            choice=choice,
+            np_snapshot=np_snapshot,
         )
         if payment_method == _CARD:
             order_out.pay_url = await self._initiate_card_payment(
@@ -405,7 +585,9 @@ class CheckoutService:
             price=variant.price if variant is not None else product.price,
             qty=qty,
         )
-        totals = self._quote_from_lines([line], PICKUP, None)
+        totals = await self._quote_from_lines(
+            [line], _DeliveryChoice(service=OWN, delivery_type=PICKUP)
+        )
         contact_email = email if email else self._placeholder_email(phone)
         snapshot: _DeliverySnapshot = (name, None, None, None)
         return await self._persist_order(
@@ -456,6 +638,8 @@ class CheckoutService:
         promo_code: str | None,
         cart_id: int | None,
         payment_method: str = "cod",
+        choice: "_DeliveryChoice | None" = None,
+        np_snapshot: dict | None = None,
     ) -> OrderOut:
         """Create the order + lines in one transaction (§9.6, shared core).
 
@@ -478,6 +662,9 @@ class CheckoutService:
             snapshot: ``(name, city, street, zip)`` delivery snapshot.
             promo_code: Redeemed coupon snapshot, else ``None``.
             cart_id: Cart to mark converted, or ``None`` to skip (quick buy).
+            choice: The validated delivery selection; ``None`` means own pickup.
+            np_snapshot: Pre-resolved carrier destination (see
+                :meth:`_carrier_snapshot`), required for a carrier order.
 
         Returns:
             OrderOut: The created order with its lines.
@@ -497,6 +684,7 @@ class CheckoutService:
             delivery_cost=totals.delivery_cost,
             total=totals.total,
             delivery_type=delivery_type,
+            delivery_service=choice.service if choice else OWN,
             delivery_address_id=delivery_address_id,
             delivery_name=snap_name,
             delivery_city=snap_city,
@@ -509,6 +697,25 @@ class CheckoutService:
         # Pull DB-side ``created_at`` (server_default) onto the instance so the
         # response DTO carries it after commit.
         await self.session.refresh(order, attribute_names=["created_at"])
+
+        carrier_row: OrderDeliveryNovaPost | None = None
+        if choice is not None and choice.is_carrier:
+            carrier_row = OrderDeliveryNovaPost(
+                order_id=order.id,
+                address_parts=(
+                    choice.np_address.model_dump(exclude_none=True)
+                    if choice.np_address
+                    else None
+                ),
+                # What the carrier quoted. NULL when a free-delivery threshold
+                # applied — we never asked for a price in that case, and
+                # recording 0 would misrepresent what the shipment costs us.
+                calculated_cost=(
+                    totals.delivery_cost if totals.delivery_cost > _ZERO else None
+                ),
+                **(np_snapshot or {}),
+            )
+            self.session.add(carrier_row)
 
         item_models: list[OrderItem] = []
         for line in lines:
@@ -553,8 +760,13 @@ class CheckoutService:
                 raise OutOfStockError(line.product_id)
 
         await self.session.commit()
-        await self._send_confirmation(order.number, email, order.total)
-        return OrderOut.from_order(order, item_models)
+        await self._send_confirmation(
+            order.number,
+            email,
+            order.total,
+            self._delivery_line(choice, snapshot, np_snapshot),
+        )
+        return OrderOut.from_order(order, item_models, carrier_row)
 
     # ------------------------------------------------------------------ #
     # Card payment initiation (maib) — only when payment_method == card
@@ -627,7 +839,9 @@ class CheckoutService:
             # Variable-product line: price/stock come from the variant. A stale
             # line (variant gone or deactivated) is skipped like an inactive
             # product, so it never blocks checkout of the rest of the cart.
-            variant = variants.get(cart_item.variant_id) if cart_item.variant_id else None
+            variant = (
+                variants.get(cart_item.variant_id) if cart_item.variant_id else None
+            )
             if cart_item.variant_id is not None and (
                 variant is None or not variant.is_active
             ):
@@ -638,6 +852,11 @@ class CheckoutService:
                 raise OutOfStockError(product.id)
             base_name = name if name is not None else product.code
             label = labels.get(cart_item.variant_id) if cart_item.variant_id else None
+            weight_g = None
+            if variant is not None and variant.weight_g is not None:
+                weight_g = variant.weight_g
+            elif product.weight_g is not None:
+                weight_g = product.weight_g
             priced.append(
                 _PricedLine(
                     product_id=product.id,
@@ -645,6 +864,7 @@ class CheckoutService:
                     name=f"{base_name} ({label})" if label else base_name,
                     price=unit_price,
                     qty=cart_item.qty,
+                    weight_g=weight_g,
                 )
             )
 
@@ -760,12 +980,10 @@ class CheckoutService:
         )
         return discount
 
-    def _quote_from_lines(
+    async def _quote_from_lines(
         self,
         lines: list[_PricedLine],
-        delivery_type: str,
-        delivery_address_id: int | None,
-        delivery_address: DeliveryAddressIn | None = None,
+        choice: "_DeliveryChoice",
         *,
         discount_total: Decimal = _ZERO,
     ) -> QuoteOut:
@@ -773,9 +991,7 @@ class CheckoutService:
 
         Args:
             lines: Resolved, stock-checked cart lines.
-            delivery_type: ``pickup`` or ``courier``.
-            delivery_address_id: Saved address id (courier; logged-in users).
-            delivery_address: Inline courier address (guest or user).
+            choice: The validated delivery selection.
             discount_total: Promo discount to subtract from the subtotal (already
                 validated + clamped by :meth:`_resolve_discount`; default zero).
 
@@ -783,17 +999,30 @@ class CheckoutService:
             QuoteOut: The computed breakdown.
 
         Raises:
-            DeliveryAddressRequiredError: If courier is chosen without an address.
+            DeliveryAddressRequiredError: If our courier is chosen without an
+                address.
+            DeliveryQuoteUnavailableError: If the carrier cannot price it.
         """
         subtotal = sum((line.line_total for line in lines), _ZERO)
-        has_address = delivery_address_id is not None or delivery_address is not None
         # The free-delivery threshold is measured against what the customer
         # actually pays for goods, not the pre-discount subtotal: a coupon that
         # drops the payable amount below the threshold brings the delivery charge
         # back. Clamped at zero so a discount >= subtotal can't push the base
         # negative.
         payable = max(subtotal - discount_total, _ZERO)
-        delivery_cost = self._delivery_cost(payable, delivery_type, has_address)
+        if choice.is_carrier:
+            threshold = self._free_delivery_threshold(choice)
+            # Check the threshold BEFORE calling the carrier: a free shipment
+            # needs no quote, and that is one less third-party round-trip on the
+            # checkout path.
+            delivery_cost = (
+                _ZERO
+                if threshold is not None and payable >= threshold
+                else await self._carrier_cost(lines, choice)
+            )
+        else:
+            has_address = choice.address_id is not None or choice.address is not None
+            delivery_cost = self._delivery_cost(payable, choice.type, has_address)
         total = subtotal - discount_total + delivery_cost
         item_count = sum(line.qty for line in lines)
         return QuoteOut(
@@ -801,9 +1030,101 @@ class CheckoutService:
             discount_total=discount_total,
             delivery_cost=delivery_cost,
             total=total,
-            delivery_type=delivery_type,
+            delivery_type=choice.type,
+            delivery_service=choice.service,
             item_count=item_count,
         )
+
+    async def _carrier_cost(
+        self,
+        lines: list["_PricedLine"],
+        choice: "_DeliveryChoice",
+    ) -> Decimal:
+        """Ask Nova Post what this shipment costs.
+
+        Args:
+            lines: Resolved cart lines (their weights build the parcel).
+            choice: The validated delivery selection.
+
+        Returns:
+            Decimal: The carrier's price.
+
+        Raises:
+            DeliveryQuoteUnavailableError: If the carrier is unreachable or will
+                not price the shipment. No fallback price is invented (§4.6).
+        """
+        from app.services.delivery.novapost_client import NovaPostError
+        from app.services.delivery.novapost_service import NovaPostService
+
+        if self.redis is None:  # pragma: no cover - guarded by the router wiring
+            raise DeliveryQuoteUnavailableError("Delivery pricing is unavailable")
+        service = NovaPostService(self.redis)
+        weights = [line.weight_g * line.qty for line in lines]
+        try:
+            return await service.quote(
+                delivery_type=choice.type,
+                weights_g=weights,
+                division_id=choice.division_id,
+                settlement_id=choice.settlement_id,
+                address_parts=(
+                    choice.np_address.model_dump(exclude_none=True)
+                    if choice.np_address
+                    else None
+                ),
+            )
+        except NovaPostError as exc:
+            logger.warning("novapost: quote failed (%s)", exc)
+            raise DeliveryQuoteUnavailableError(
+                "Delivery cost is temporarily unavailable"
+            ) from exc
+
+    async def _carrier_snapshot(self, choice: "_DeliveryChoice") -> dict:
+        """Resolve the destination snapshot stored alongside a carrier order.
+
+        Done BEFORE the order transaction opens: it is a read against a third
+        party, and nothing about it should be able to roll back a committed
+        order. A carrier failure degrades to empty names — the ids are already
+        captured, so the order is still fulfillable.
+
+        Args:
+            choice: The validated delivery selection.
+
+        Returns:
+            dict: Snapshot fields for ``order_delivery_np``.
+        """
+        from app.services.delivery.novapost_client import NovaPostError
+        from app.services.delivery.novapost_service import NovaPostService
+
+        blank = {
+            "settlement_id": choice.settlement_id,
+            "settlement_name": "",
+            "settlement_name_ru": "",
+            "division_id": choice.division_id,
+            "division_number": "",
+            "division_address": "",
+        }
+        if self.redis is None:  # pragma: no cover - guarded by the router wiring
+            return blank
+        try:
+            return await NovaPostService(self.redis).snapshot(
+                delivery_type=choice.type,
+                division_id=choice.division_id,
+                settlement_id=choice.settlement_id,
+            )
+        except NovaPostError as exc:
+            logger.warning("novapost: destination snapshot failed (%s)", exc)
+            return blank
+
+    def _free_delivery_threshold(self, choice: "_DeliveryChoice") -> Decimal | None:
+        """Return the free-delivery threshold that applies to this method.
+
+        The carrier may have its own: it bills us per shipment, so the point at
+        which we absorb that cost is a separate commercial decision from our own
+        flat rate. Unset falls back to the store-wide threshold.
+        """
+        if choice.is_carrier and settings.novapost_free_delivery_from is not None:
+            return settings.novapost_free_delivery_from
+        return settings.free_delivery_from
 
     def _delivery_cost(
         self,
@@ -844,11 +1165,63 @@ class CheckoutService:
             return _ZERO
         return settings.courier_rate
 
+    @staticmethod
+    def _delivery_line(
+        choice: "_DeliveryChoice | None",
+        snapshot: _DeliverySnapshot,
+        np_snapshot: dict | None,
+    ) -> str:
+        """Describe the delivery in one line for the confirmation email.
+
+        Args:
+            choice: The delivery selection, or ``None`` (own pickup).
+            snapshot: The own-logistics address snapshot.
+            np_snapshot: The carrier destination snapshot.
+
+        Returns:
+            str: e.g. ``"Nova Post branch #2, bd. Dacia 45, Chișinău"``.
+        """
+        if choice is None or choice.type == PICKUP and not choice.is_carrier:
+            return "Pickup from the store"
+        if not choice.is_carrier:
+            name, city, street, _zip = snapshot
+            where = ", ".join(part for part in (street, city) if part)
+            return f"Courier delivery to {where}" if where else "Courier delivery"
+        snap = np_snapshot or {}
+        city = snap.get("settlement_name") or ""
+        if choice.type == COURIER:
+            address = choice.np_address
+            where = ""
+            if address is not None:
+                where = ", ".join(
+                    part
+                    for part in (
+                        f"{address.street} {address.building}".strip(),
+                        address.city,
+                    )
+                    if part.strip()
+                )
+            return f"Nova Post courier to {where}" if where else "Nova Post courier"
+        label = "postomat" if choice.type == POSTOMAT else "branch"
+        point = ", ".join(
+            part
+            for part in (
+                f"{label} #{snap.get('division_number')}"
+                if snap.get("division_number")
+                else label,
+                snap.get("division_address") or "",
+                city,
+            )
+            if part
+        )
+        return f"Nova Post {point}"
+
     async def _send_confirmation(
         self,
         number: str,
         email: str,
         total: Decimal,
+        delivery: str = "",
     ) -> None:
         """Dispatch the post-commit order-confirmation side effect (COD, §9.8).
 
@@ -871,6 +1244,7 @@ class CheckoutService:
             send_order_confirmation_email.delay(
                 to=email,
                 order_number=number,
+                delivery=delivery,
                 total_str=str(total),
             )
         except Exception:  # noqa: BLE001 — side effect must not break checkout
