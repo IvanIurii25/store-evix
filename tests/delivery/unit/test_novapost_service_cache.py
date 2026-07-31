@@ -96,7 +96,9 @@ async def test_parcel_falls_back_to_the_default_weight() -> None:
     assert service.build_parcels([])[0]["actualWeight"] > 0
 
 
-async def test_shipment_payer_defaults_to_sender_without_a_contract(monkeypatch) -> None:
+async def test_shipment_payer_defaults_to_sender_without_a_contract(
+    monkeypatch,
+) -> None:
     """No contract number → we pay on handover; no invented fallback contract.
 
     The reference implementation falls back to a literal contract belonging to
