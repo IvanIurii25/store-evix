@@ -20,6 +20,8 @@ a number is unknown; illegal transitions surface as
 machine (mapped to 409 by the router).
 """
 
+import logging
+
 from fastapi import status
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -39,6 +41,8 @@ from app.services.order_service import (
 
 # Re-exported for the admin router / tests that import it from here; the
 # canonical definition lives next to the order state machine.
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "AdminOrderService",
     "OrderNotFoundError",
@@ -287,7 +291,51 @@ class AdminOrderService:
         row.status_text = str(response.get("status") or "")
         await self.session.commit()
         await self.session.refresh(row)
+        # Post-commit side effect: tell the customer how to track it. Enqueue
+        # failures are swallowed — a broker hiccup must not undo a shipment that
+        # already exists at the carrier.
+        self._notify_waybill(order.email, order.number, row)
         return row
+
+    @staticmethod
+    def _notify_waybill(email: str, number: str, row: OrderDeliveryNovaPost) -> None:
+        """Enqueue the "your parcel is travelling" email (best effort).
+
+        Args:
+            email: Customer contact email.
+            number: Order number.
+            row: The carrier row carrying the fresh waybill.
+        """
+        if not row.awb_number:
+            return
+        destination = (
+            ", ".join(
+                part
+                for part in (
+                    f"№ {row.division_number}" if row.division_number else "",
+                    row.division_address,
+                    row.settlement_name,
+                )
+                if part
+            )
+            if row.division_number or row.division_address
+            else ""
+        )
+        try:
+            from app.tasks.waybill_email import send_waybill_email
+
+            send_waybill_email.delay(
+                to=email,
+                order_number=number,
+                awb_number=row.awb_number,
+                destination=destination,
+            )
+        except Exception:  # noqa: BLE001 — see the docstring above
+            logger.warning(
+                "novapost: could not enqueue the waybill email for %s",
+                number,
+                exc_info=True,
+            )
 
     async def cancel_waybill(self, number: str) -> OrderDeliveryNovaPost:
         """Cancel the carrier waybill for one order.

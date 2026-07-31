@@ -292,3 +292,43 @@ async def test_waybill_endpoints_require_staff(
 
     assert created.status_code in (401, 403), created.text
     assert cancelled.status_code in (401, 403), cancelled.text
+
+
+async def test_creating_a_waybill_emails_the_tracking_number(
+    client: AsyncClient, db_session: AsyncSession, make_order, monkeypatch
+) -> None:
+    """The customer is told how to track the parcel, with its destination."""
+    from app.tasks import waybill_email
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        waybill_email.send_waybill_email,
+        "delay",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    order = await _carrier_order(db_session, make_order, "AWB-013")
+
+    await client.post(f"{_ADMIN}/{order.number}/np/shipment")
+
+    assert len(sent) == 1
+    assert sent[0]["to"] == order.email
+    assert sent[0]["awb_number"].startswith("STUB")
+    assert "str. Ștefan cel Mare 12" in sent[0]["destination"]
+
+
+async def test_a_broker_outage_does_not_undo_the_waybill(
+    client: AsyncClient, db_session: AsyncSession, make_order, monkeypatch
+) -> None:
+    """The shipment exists at the carrier; a mail hiccup must not fail the call."""
+    from app.tasks import waybill_email
+
+    def boom(**_kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(waybill_email.send_waybill_email, "delay", boom)
+    order = await _carrier_order(db_session, make_order, "AWB-014")
+
+    resp = await client.post(f"{_ADMIN}/{order.number}/np/shipment")
+
+    assert resp.status_code == 200, resp.text
+    assert (await _row(db_session, order.id)).awb_number

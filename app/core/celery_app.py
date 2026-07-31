@@ -25,6 +25,8 @@ celery_app = Celery(
         "app.tasks.support",
         "app.tasks.es_sync",
         "app.tasks.order_email",
+        "app.tasks.novapost",
+        "app.tasks.waybill_email",
     ],
 )
 """The shared Celery app. Import this in task modules to register tasks and in
@@ -72,6 +74,14 @@ celery_app.conf.update(
         "search-reindex-nightly": {
             "task": "search.reindex_all",
             "schedule": 86400.0,  # daily
+        },
+        # The carrier never calls us back, so shipment statuses only move when
+        # we ask. Half-hourly is often enough for a customer to see progress
+        # without polling a third party for nothing; the task self-no-ops when
+        # the carrier is off and only ever asks about parcels still in flight.
+        "novapost-sync-statuses": {
+            "task": "novapost.sync_statuses",
+            "schedule": 1800.0,  # every 30 minutes
         },
     },
 )

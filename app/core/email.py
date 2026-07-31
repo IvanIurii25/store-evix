@@ -85,6 +85,38 @@ def _render_confirmation(
     return message
 
 
+def _render_waybill(
+    *,
+    to: str,
+    order_number: str,
+    awb_number: str,
+    destination: str,
+) -> EmailMessage:
+    """Build the "your parcel is on its way" :class:`EmailMessage`.
+
+    Args:
+        to: Recipient contact email.
+        order_number: The order the shipment belongs to.
+        awb_number: The carrier waybill number (what the customer tracks by).
+        destination: Human-readable pickup point or address.
+
+    Returns:
+        EmailMessage: A ready-to-send message.
+    """
+    message = EmailMessage()
+    message["From"] = settings.email_from
+    message["To"] = to
+    message["Subject"] = f"Order {order_number} shipped"
+    where = f"Delivery: {destination}\n" if destination else ""
+    message.set_content(
+        f"Your order {order_number} has been handed to Nova Post.\n\n"
+        f"Tracking number: {awb_number}\n"
+        f"{where}\n"
+        f"You can track the parcel with this number on the carrier's website.\n"
+    )
+    return message
+
+
 def _render_restock(
     *,
     to: str,
@@ -245,3 +277,28 @@ async def send_restock_notification(
         lang=lang,
     )
     await _dispatch(message)
+
+
+async def send_waybill_created(
+    *,
+    to: str,
+    order_number: str,
+    awb_number: str,
+    destination: str = "",
+) -> None:
+    """Tell the customer their parcel is travelling, and how to track it.
+
+    Args:
+        to: Recipient contact email.
+        order_number: The order the shipment belongs to.
+        awb_number: The carrier waybill number.
+        destination: Human-readable pickup point or address.
+    """
+    await _dispatch(
+        _render_waybill(
+            to=to,
+            order_number=order_number,
+            awb_number=awb_number,
+            destination=destination,
+        )
+    )
