@@ -10,6 +10,10 @@ Two contracts, like the content-page module:
 Validation lives at the edge so a bad payload fails as a 422 instead of a DB
 error or, worse, a rendered page:
 
+* ``link_url`` exists twice: on the translation (per language) and on the banner
+  (fallback). Storefront paths carry the locale, so a bilingual banner normally
+  needs its own target per language; the banner-level one covers the rare
+  language-neutral case. Both are validated the same way.
 * ``link_url`` is an internal path (``/ru/c/dom``) or an ``https://`` URL —
   anything else, ``javascript:`` above all, is refused. A banner is a
   staff-authored link rendered on every visitor's homepage, so this is the one
@@ -130,6 +134,7 @@ class BannerTranslationIn(BaseModel):
     image_url: str = Field(min_length=1, max_length=_URL_MAX)
     image_mobile_url: str | None = Field(default=None, max_length=_URL_MAX)
     alt: str = Field(min_length=1, max_length=_ALT_MAX)
+    link_url: str | None = Field(default=None, max_length=_URL_MAX)
     title: str | None = Field(default=None, max_length=_TEXT_MAX)
     subtitle: str | None = Field(default=None, max_length=_TEXT_MAX)
     cta_label: str | None = Field(default=None, max_length=_TEXT_MAX)
@@ -138,6 +143,11 @@ class BannerTranslationIn(BaseModel):
     @classmethod
     def _check_lang(cls, value: str) -> str:
         return _validate_lang(value)
+
+    @field_validator("link_url")
+    @classmethod
+    def _check_link(cls, value: str | None) -> str | None:
+        return _validate_link(value)
 
     @field_validator("image_url", "alt")
     @classmethod
@@ -171,6 +181,7 @@ class BannerTranslationOut(BaseModel):
     image_url: str
     image_mobile_url: str | None = None
     alt: str
+    link_url: str | None = None
     title: str | None = None
     subtitle: str | None = None
     cta_label: str | None = None

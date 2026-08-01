@@ -207,3 +207,54 @@ async def test_admin_unknown_banner_is_404(staff_client):
         await staff_client.put(f"{ADMIN}/999999", json=banner_payload())
     ).status_code == 404
     assert (await staff_client.delete(f"{ADMIN}/999999")).status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Per-language link
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_each_language_gets_its_own_link(staff_client):
+    """Storefront paths carry the locale, so the link is per language."""
+    payload = banner_payload(link_url=None)
+    payload["translations"][0]["link_url"] = "/ru/p/chasy"
+    payload["translations"][1]["link_url"] = "/ro/p/ceas"
+    await staff_client.post(ADMIN, json=payload)
+
+    ru = (await staff_client.get(PUBLIC, params={"lang": "ru"})).json()[0]
+    ro = (await staff_client.get(PUBLIC, params={"lang": "ro"})).json()[0]
+
+    assert ru["link_url"] == "/ru/p/chasy"
+    assert ro["link_url"] == "/ro/p/ceas"
+
+
+@pytest.mark.asyncio
+async def test_banner_link_is_the_fallback(staff_client):
+    """A language without its own link falls back to the banner-level one.
+
+    That is what keeps banners created before this field from breaking.
+    """
+    payload = banner_payload(link_url="/ro/c/dom")
+    payload["translations"][0]["link_url"] = "/ru/c/dom"
+    # ro deliberately left without its own link
+    await staff_client.post(ADMIN, json=payload)
+
+    ru = (await staff_client.get(PUBLIC, params={"lang": "ru"})).json()[0]
+    ro = (await staff_client.get(PUBLIC, params={"lang": "ro"})).json()[0]
+
+    assert ru["link_url"] == "/ru/c/dom"
+    assert ro["link_url"] == "/ro/c/dom"
+
+
+@pytest.mark.asyncio
+async def test_translation_link_survives_a_round_trip(staff_client):
+    """The back-office reads back what it saved, per language."""
+    payload = banner_payload()
+    payload["translations"][0]["link_url"] = "/ru/p/chasy"
+    banner_id = (await staff_client.post(ADMIN, json=payload)).json()["id"]
+
+    body = (await staff_client.get(f"{ADMIN}/{banner_id}")).json()
+    ru = next(t for t in body["translations"] if t["lang"] == "ru")
+    ro = next(t for t in body["translations"] if t["lang"] == "ro")
+
+    assert ru["link_url"] == "/ru/p/chasy"
+    assert ro["link_url"] is None

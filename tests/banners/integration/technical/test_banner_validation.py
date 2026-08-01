@@ -136,3 +136,30 @@ async def test_optional_copy_round_trips(staff_client):
     assert slide["title"] == "Летняя распродажа"
     assert slide["subtitle"] == "Скидки до 50%"
     assert slide["cta_label"] == "Смотреть"
+
+
+@pytest.mark.parametrize(
+    "link", ["javascript:alert(1)", "http://example.com", "//evil.tld"]
+)
+@pytest.mark.asyncio
+async def test_translation_link_is_validated_too(staff_client, link):
+    """The per-language link is a staff-typed URL as well — same rules apply."""
+    payload = banner_payload()
+    payload["translations"][0]["link_url"] = link
+
+    response = await staff_client.post(ADMIN, json=payload)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_blank_translation_link_becomes_absent(staff_client):
+    """An empty per-language field means "use the banner link", not an empty href."""
+    payload = banner_payload(link_url="/ro/c/dom")
+    payload["translations"][0]["link_url"] = "   "
+
+    created = await staff_client.post(ADMIN, json=payload)
+
+    assert created.status_code == 201
+    ru = next(t for t in created.json()["translations"] if t["lang"] == "ru")
+    assert ru["link_url"] is None

@@ -99,6 +99,11 @@ class BannerTranslation(Base):
     image_mobile_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     alt: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Per-language target. Storefront paths carry the locale (/ru/p/… vs /ro/p/…),
+    # so a bilingual banner needs its own link per language; ``Banner.link_url``
+    # stays as the fallback for banners that point somewhere language-neutral.
+    link_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Optional overlay copy — empty means the creative speaks for itself.
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     subtitle: Mapped[str | None] = mapped_column(Text, nullable=True)

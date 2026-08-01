@@ -75,7 +75,9 @@ class BannerService:
                 title=translation.title,
                 subtitle=translation.subtitle,
                 cta_label=translation.cta_label,
-                link_url=banner.link_url,
+                # Ссылка языка важнее общей: пути витрины содержат локаль, и
+                # общая ссылка увела бы половину посетителей на чужой язык.
+                link_url=translation.link_url or banner.link_url,
             )
             for banner, translation in pairs
         ]
@@ -203,6 +205,7 @@ class BannerService:
             image_url=payload.image_url,
             image_mobile_url=payload.image_mobile_url,
             alt=payload.alt,
+            link_url=payload.link_url,
             title=payload.title,
             subtitle=payload.subtitle,
             cta_label=payload.cta_label,
