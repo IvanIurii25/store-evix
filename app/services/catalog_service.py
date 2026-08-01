@@ -161,6 +161,7 @@ class CatalogService:
             list[CategoryNode]: Root nodes with nested ``children``.
         """
         pairs = await self.repo.list_active_categories(lang)
+        counts = await self.repo.count_products_by_category(lang)
         nodes: dict[int, CategoryNode] = {}
         for category, translation in pairs:
             nodes[category.id] = CategoryNode(
@@ -171,6 +172,7 @@ class CatalogService:
                 depth=category.depth,
                 position=category.position,
                 cover_image_url=category.cover_image_url,
+                product_count=counts.get(category.id, 0),
             )
         roots: list[CategoryNode] = []
         for node in nodes.values():
@@ -201,6 +203,9 @@ class CatalogService:
 
         breadcrumbs = await self._build_breadcrumbs(category.path, lang)
         child_pairs = await self.repo.get_child_categories(category.id, lang)
+        child_counts = await self.repo.count_products_by_category(
+            lang, [child.id for child, _ in child_pairs]
+        )
         children = [
             CategoryNode(
                 id=child.id,
@@ -209,6 +214,7 @@ class CatalogService:
                 slug=child_tr.slug,
                 depth=child.depth,
                 position=child.position,
+                product_count=child_counts.get(child.id, 0),
             )
             for child, child_tr in child_pairs
         ]

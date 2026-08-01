@@ -46,6 +46,9 @@ class CategoryNode(BaseModel):
     depth: int
     position: int
     cover_image_url: str | None = None
+    # Active products in the node's whole subtree — the same set the category
+    # listing shows (it filters by ``product_card.path``, not by direct parent).
+    product_count: int = 0
     children: list["CategoryNode"] = Field(default_factory=list)
 
 

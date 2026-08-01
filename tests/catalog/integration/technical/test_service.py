@@ -278,3 +278,92 @@ async def test_rebuild_card_active_incomplete_raises(seed):
 
     with pytest.raises(PublicationError):
         await service.rebuild_card(14)
+
+
+async def _seed_counted_products(seed) -> None:
+    """One product directly in the root, one in its child (both publishable)."""
+    session = seed["session"]
+    service: CatalogService = seed["service"]
+    for product_id, category_id in ((201, 1), (202, 2)):
+        await seed["add_product"](
+            session,
+            product_id=product_id,
+            category_id=category_id,
+            code=f"P-CNT-{product_id}",
+            price=Decimal("50.00"),
+            qty=3,
+            slugs={"ru": f"cnt-{product_id}-ru", "ro": f"cnt-{product_id}-ro"},
+            names={"ru": f"Товар {product_id}", "ro": f"Produs {product_id}"},
+        )
+    await session.flush()
+    await service.rebuild_cards([201, 202])
+
+
+@pytest.mark.asyncio
+async def test_category_tree_counts_roll_up_over_subtree(seed):
+    """A parent counts its own products plus everything under it."""
+    await seed["build_tree"]()
+    await _seed_counted_products(seed)
+    service: CatalogService = seed["service"]
+
+    root = (await service.list_categories("ru"))[0]
+
+    assert root.product_count == 2
+    assert root.children[0].product_count == 1
+
+
+@pytest.mark.asyncio
+async def test_category_tree_counts_are_per_language(seed):
+    """Each language is counted separately — two card rows are not one product twice."""
+    await seed["build_tree"]()
+    await _seed_counted_products(seed)
+    service: CatalogService = seed["service"]
+
+    ru_root = (await service.list_categories("ru"))[0]
+    ro_root = (await service.list_categories("ro"))[0]
+
+    assert ru_root.product_count == 2
+    assert ro_root.product_count == 2
+
+
+@pytest.mark.asyncio
+async def test_category_tree_counts_exclude_inactive_products(seed):
+    """Deactivated products drop out of the count (their cards are removed)."""
+    await seed["build_tree"]()
+    await _seed_counted_products(seed)
+    session = seed["session"]
+    service: CatalogService = seed["service"]
+
+    product = await service.repo.get_product(202)
+    product.is_active = False
+    await session.flush()
+    await service.rebuild_card(202)
+
+    root = (await service.list_categories("ru"))[0]
+
+    assert root.product_count == 1
+    assert root.children[0].product_count == 0
+
+
+@pytest.mark.asyncio
+async def test_category_tree_counts_zero_without_products(seed):
+    """An empty tree reports zeros rather than omitting the field."""
+    await seed["build_tree"]()
+    service: CatalogService = seed["service"]
+
+    root = (await service.list_categories("ru"))[0]
+
+    assert root.product_count == 0
+    assert root.children[0].product_count == 0
+
+
+@pytest.mark.asyncio
+async def test_category_detail_children_carry_counts(seed):
+    """Child chips on the category page get the same subtree counts."""
+    await seed["build_tree"]()
+    await _seed_counted_products(seed)
+    service: CatalogService = seed["service"]
+
+    detail = await service.get_category("electronika", "ru")
+
+    assert [child.product_count for child in detail.children] == [1]

@@ -12,7 +12,7 @@ OFFSET. Relations that must be materialized are loaded explicitly (no N+1).
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select
+from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cart import Cart, CartItem
@@ -162,6 +162,55 @@ class CatalogRepository:
         )
         rows = await self.session.execute(stmt)
         return list(rows.all())
+
+    async def count_products_by_category(
+        self,
+        lang: str,
+        category_ids: list[int] | None = None,
+    ) -> dict[int, int]:
+        """Count listable products per category, rolled up over the subtree.
+
+        Reads the same source and predicate as the listing (``product_card``
+        filtered by ``lang`` + ``is_active``), so the number always matches what
+        the category page would show without filters. Because a card's ``path``
+        holds ancestors..self, unnesting it and grouping yields the subtree count
+        for every ancestor in one pass — no recursion, one query.
+
+        Args:
+            lang: Requested language code (cards are one row per language).
+            category_ids: Restrict the result to these categories; ``None``
+                counts every category.
+
+        Returns:
+            dict[int, int]: Map ``category_id -> product count``. Categories with
+            no products are absent (callers default to 0).
+        """
+        if category_ids is not None and not category_ids:
+            return {}
+        # Explicit JOIN LATERAL: an implicit ``FROM card, unnest(card.path)``
+        # only resolves when the driving table is emitted first, which the
+        # compiler does not guarantee.
+        ancestors = (
+            func.unnest(ProductCard.path)
+            .table_valued("category_id")
+            .render_derived(name="ancestors")
+            .lateral()
+        )
+        category_id = ancestors.c.category_id
+        stmt = (
+            select(category_id, func.count().label("total"))
+            .select_from(ProductCard)
+            .join(ancestors, true())
+            .where(
+                ProductCard.lang == lang,
+                ProductCard.is_active.is_(True),
+            )
+            .group_by(category_id)
+        )
+        if category_ids is not None:
+            stmt = stmt.where(category_id.in_(category_ids))
+        rows = await self.session.execute(stmt)
+        return {row[0]: row[1] for row in rows.all()}
 
     # ------------------------------------------------------------------ #
     # Listing (reads the denormalized product_card — §5.2, keyset — §5.3)
