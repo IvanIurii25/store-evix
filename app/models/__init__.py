@@ -7,6 +7,7 @@ chosen so cross-domain foreign keys (cart_item / order_item -> product) resolve.
 
 from app.models import (
     analytics,
+    banner,
     cart,
     catalog,
     consent,
@@ -25,6 +26,7 @@ from app.models.base import Base
 __all__ = [
     "Base",
     "catalog",
+    "banner",
     "content_page",
     "user",
     "cart",

@@ -13,9 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import get_session
 from app.schemas.admin_settings import SeoSettings
+from app.schemas.banner import BannerOut
 from app.schemas.content_page import ContentPageDetail, ContentPageListItem
 from app.schemas.payment import SiteConfigOut
 from app.services.admin_settings_service import SettingsService
+from app.services.banner_service import BannerService
 from app.services.content_page_service import ContentPageService
 
 # Default storefront language when the ``lang`` query param is omitted.
@@ -50,6 +52,27 @@ async def get_site_config() -> SiteConfigOut:
         SiteConfigOut: The public config block.
     """
     return SiteConfigOut(card_payment_enabled=settings.card_payment_enabled)
+
+
+@router.get("/banners", response_model=list[BannerOut])
+async def list_banners(
+    lang: str = Query(default=_DEFAULT_LANG),
+    session: AsyncSession = Depends(get_session),
+) -> list[BannerOut]:
+    """Return the homepage carousel for the storefront (public, read-only).
+
+    Only banners that are active, inside their display window and translated into
+    ``lang`` are returned, in display order. An empty list is a normal answer —
+    the storefront falls back to its static hero rather than rendering a gap.
+
+    Args:
+        lang: Requested language code.
+        session: Injected async DB session.
+
+    Returns:
+        list[BannerOut]: Ordered slides.
+    """
+    return await BannerService(session).list_live(lang)
 
 
 @router.get("/pages", response_model=list[ContentPageListItem])
